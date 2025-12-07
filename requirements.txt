@@ -1,0 +1,24 @@
+# Web
+fastapi
+uvicorn[standard]
+websockets
+
+# AI Models & Adapters
+faster-whisper
+openai
+kokoro_onnx
+
+# Config & Core
+pydantic-settings
+
+# Audio
+soundfile
+numpy
+
+# mem0 Setup
+qdrant-client 
+sentence-transformers
+
+#mcp
+mcp
+uv
