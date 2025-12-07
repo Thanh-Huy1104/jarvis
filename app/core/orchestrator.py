@@ -17,20 +17,42 @@ from app.domain.ports import (
     TTSPort,
 )
 
-_SENT_RE = re.compile(r"^(.*?[.!?])(\s+|$)", re.DOTALL)
+_SENT_RE = re.compile(r"^(.*?[.!?\n])(\s+|$)", re.DOTALL)
 
 SYSTEM_PERSONA = (
-    "You are J.A.R.V.I.S., a hyper-competent and loyal AI butler. "
-    "Tone: Formal, precise, and composed. Assume the user is an expert. "
-    "Rules: "
-    "1. If the user asks a follow-up, analyze conversation context to maintain continuity. "
-    "2. CODE EXECUTION: You have a secure Python sandbox. Use it for calculations or data tasks. "
-    "   CRITICAL: After running code, you MUST verbally report the RESULT of the execution to the user. Do not just show the code block. "
-    "3. IMPORTANT: Reason about the request inside <think>...</think> tags first. "
-    "   The user will NOT hear what is inside these tags. "
-    "Output: Speak in fluid, natural sentences only. "
-    "Forbidden: Do not use bullet points, lists, or headers. "
-    "Keep responses extremely concise."
+    "You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), a hyper-competent AI butler. "
+    "Current Context: Running on a private Proxmox server with a secure local Python sandbox.\n\n"
+
+    "### IDENTITY & TONE\n"
+    "- Tone: Formal, precise, dryly witty (like a British butler), and extremely concise.\n"
+    "- Address the user as 'Sir' or 'Boss'.\n"
+    "- Never apologize profusely. If an error occurs, simply state the fix and proceed.\n\n"
+
+    "### CRITICAL EXECUTION RULES\n"
+    "1. **SILENT EXECUTION:** The Python sandbox captures `STDOUT` only. \n"
+    "   - You MUST explicitly `print()` variables to see them.\n"
+    "   - Returning a value (e.g., `x = 5; x`) does NOTHING. You must `print(x)`.\n"
+    "   - If you see 'Output is empty', it means you forgot to print.\n"
+    "2. **REALITY CHECK:** You have NO access to the outside world (internet, files, time) except through your tools.\n"
+    "   - Never guess a file's content. Read it first.\n"
+    "   - Never guess the date. Run `datetime.now()`.\n"
+    "3. **DEPENDENCY MANAGEMENT:**\n"
+    "   - You cannot import a library unless you have listed it in the `dependencies` list.\n"
+    "   - Use ROOT package names only (e.g., `import numpy` → `dependencies=['numpy']`).\n"
+    "   - DO NOT list standard libraries (os, sys, json) in dependencies.\n\n"
+
+    "### THOUGHT PROCESS (Internal Monologue)\n"
+    "Before answering, you must perform a <think> cycle:\n"
+    "1. **Analyze:** What does the user actually want?\n"
+    "2. **Plan:** Do I need a tool? (Yes/No)\n"
+    "3. **Constraint Check:** Am I assuming something I shouldn't? (e.g., file paths)\n"
+    "4. **Formulate:** specific tool call or verbal response.\n"
+    "Then, output the tool call or response."
+    
+    "### OUTPUT FORMATTING\n"
+    "- **NO SIMULATION:** Never write out Python code or function calls (like `Print(...)`) in your final response. If you need to calculate, USE THE TOOL.\n"
+    "- **NO MATH JARGON:** Do not show LaTeX equations (e.g. `[ \\text{Memory} ... ]`). Just state the final result naturally.\n"
+    "- **Professionalism:** Present the data clearly. Example: 'The server has 64GB of RAM, and the model requires 40GB.'\n"
 )
 
 def _dump_obj(obj: Any) -> str:
@@ -128,9 +150,11 @@ class Orchestrator:
         """Strips markdown characters."""
         if not text: return ""
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        # Add a regex to remove code blocks (```...```)
+        text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
         text = re.sub(r'#+\s', '', text)
         text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-        text = re.sub(r'[\*_`~]', '', text)
+        text = re.sub(r'[\*_`~/()]', '', text) # Added / ( )
         return text.strip()
 
     async def stream_voice_turn(
@@ -194,9 +218,10 @@ class Orchestrator:
             print(f"\n=== TOOL RESULTS ===\n{_dump_obj(tool_results)}\n====================\n")
 
         # 5. LLM Streaming
-        full_text = ""
+        full_text_for_memory = ""
         pending = ""
-        is_thinking = False
+        in_thought_block = False
+        in_code_block = False
         
         yield {"type": "assistant_start"}
 
@@ -207,25 +232,23 @@ class Orchestrator:
             tool_results=tool_results,
             system_persona=system_persona_with_context,
         ):
-            full_text += tok
+            full_text_for_memory += tok
+
+            parts = re.split(r"(<think>|</think>|```)", tok)
             
-            if "<think>" in tok:
-                is_thinking = True
-            
-            yield {"type": "token", "text": tok}
+            for part in parts:
+                if not part: continue
 
-            if "</think>" in tok:
-                is_thinking = False
-                continue
-
-            if is_thinking:
-                continue
-                
-            if "<think>" in tok:
-                continue
-
-            # --- AUDIO STREAMING ---
-            pending += tok
+                if part == "<think>":
+                    in_thought_block = True
+                elif part == "</think>":
+                    in_thought_block = False
+                elif part == "```":
+                    in_code_block = not in_code_block
+                else:
+                    if not in_thought_block and not in_code_block:
+                        yield {"type": "token", "text": part}
+                        pending += part
 
             while True:
                 pending_stripped = pending.lstrip()
@@ -240,8 +263,6 @@ class Orchestrator:
                     clean_sentence = self._clean_markdown(sentence)
                     
                     if clean_sentence:
-                        # FIX: Using speak_pcm_f32 returns (bytes, sample_rate, channels)
-                        # This generates RAW audio without WAV headers.
                         pcm, sr, ch = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sentence)
                         audio_id = str(uuid.uuid4())
                         audio_cache[audio_id] = pcm
@@ -252,18 +273,18 @@ class Orchestrator:
         if leftover:
             clean_leftover = self._clean_markdown(leftover)
             if clean_leftover:
-                # FIX: Same fix here for the leftover text
                 pcm, sr, ch = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_leftover)
                 audio_id = str(uuid.uuid4())
                 audio_cache[audio_id] = pcm
                 yield {"type": "audio", "audio_id": audio_id, "text": leftover}
 
         # Finalize
-        full_text = full_text.strip()
+        # We save the full unfiltered text to memory, but the cleaned one to session history
+        full_text_for_client = self._clean_markdown(full_text_for_memory)
         await asyncio.to_thread(
-            self.sessions.append, session_id, ChatMessage(role="assistant", content=full_text)
+            self.sessions.append, session_id, ChatMessage(role="assistant", content=full_text_for_client)
         )
 
-        await self.save_interaction(session_id, user_text, full_text)
+        await self.save_interaction(session_id, user_text, full_text_for_memory)
 
-        yield {"type": "done", "assistant_text": full_text}
+        yield {"type": "done", "assistant_text": full_text_for_client}

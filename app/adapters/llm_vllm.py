@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re  # Added for better JSON parsing
 from typing import Any, AsyncIterable, Dict, List
 
 import openai
@@ -49,26 +50,31 @@ class VllmAdapter(LLMPromptPort):
         print(f"[VllmAdapter] Deciding tools for user_text: '{user_text}'")
         
         router_system = (
-            "You are a function calling router.\n"
-            "Analyze the conversation history and the latest user request.\n"
-            "You MUST output ONLY valid JSON. No Markdown. No extra text.\n"
+            "You are the brain of an advanced AI system. Your job is to select the correct tool to fulfill a user request.\n"
+            "You MUST output ONLY valid JSON. No Markdown formatting around it. No explanation text outside the JSON.\n\n"
             "Schema:\n"
             "{\n"
-            '  "thought": "Step-by-step reasoning about context and intent",\n'
+            '  "thought": "Brief reasoning: What does the user want? Do I need a tool?",\n'
             '  "intent": "tool" | "chat",\n'
             '  "tool_calls": [{"name": string, "args": object}],\n'
             '  "assistant_hint": string | null\n'
             "}\n\n"
-            "Rules:\n"
-            "1. LOOK AT HISTORY. If the user asks a follow-up (e.g. 'and Quebec?'), apply the previous tool to the new entity.\n"
-            "2. Use 'tool' if a function can help. Use 'chat' only for general conversation.\n"
-            "3. Only choose tools from the provided tool list.\n"
+            "CRITICAL RULES FOR TOOLS:\n"
+            "1. **execute_python**:\n"
+            "   - The sandbox captures STDOUT only. You MUST include `print(...)` in your code to see results.\n"
+            "   - If importing libraries, you MUST list them in the `dependencies` array (e.g. ['numpy']).\n"
+            "   - Use ROOT package names only (e.g. 'numpy', NOT 'numpy.linalg').\n"
+            "2. **Context**:\n"
+            "   - Look at the history. If the user refers to 'it' or 'that file', use the filename from the previous turn.\n"
+            "3. **Efficiency**:\n"
+            "   - Use 'chat' if no external data is needed (e.g., greetings, philosophical questions).\n"
         )
         
         tools_str = json.dumps(tool_schemas, ensure_ascii=False)
         
         messages = [{"role": "system", "content": router_system + "\nAvailable tools:\n" + tools_str}]
         
+        # Pass recent history so the router understands context (e.g. "Run that code again")
         for m in history[-5:]:
             messages.append(_to_msg(m))
             
@@ -77,20 +83,25 @@ class VllmAdapter(LLMPromptPort):
         out = await self._client.chat.completions.create(
             model=self._model,
             messages=messages,
-            temperature=0.1,
+            temperature=0.1, # Keep low for JSON stability
         )
         
         raw = out.choices[0].message.content.strip()
         print(f"[VllmAdapter Router Thought]: {raw}")
 
         try:
-            if "```json" in raw:
-                raw = raw.split("```json")[1].split("```")[0].strip()
-            elif "```" in raw:
-                raw = raw.split("```")[1].split("```")[0].strip()
+            # --- CHANGED: More robust JSON extraction (Regex) ---
+            # Finds the first { and the last } to handle markdown blocks or stray text
+            json_match = re.search(r"(\{.*\})", raw, re.DOTALL)
+            if json_match:
+                clean_json = json_match.group(1)
+                data = json.loads(clean_json)
+                return ToolDecision(**data)
+            else:
+                # Fallback if no JSON found
+                print("[VllmAdapter Warning] No JSON found in router output.")
+                return ToolDecision(intent="chat", tool_calls=[], assistant_hint=None)
 
-            data = json.loads(raw)
-            return ToolDecision(**data)
         except (json.JSONDecodeError, ValidationError) as e:
             print(f"[VllmAdapter Error] Failed to parse router JSON: {e}")
             return ToolDecision(intent="chat", tool_calls=[], assistant_hint=None)
@@ -107,8 +118,15 @@ class VllmAdapter(LLMPromptPort):
         tool_context = ""
         if tool_calls:
             tool_context += "\nTool calls: " + json.dumps([_to_msg(tc) for tc in tool_calls], ensure_ascii=False)
+        
         if tool_results:
-            tool_context += "\nTool results: " + json.dumps([_to_msg(tr) for tr in tool_results], ensure_ascii=False)
+            # --- CHANGED: Format Tool Results clearly for the LLM ---
+            tool_context += "\n\n=== TOOL EXECUTION RESULTS ===\n"
+            for tr in tool_results:
+                # Handle potentially large outputs or errors gracefully
+                content = str(tr.result.get('output', 'No Output'))
+                tool_context += f"Tool '{tr.name}' output:\n{content}\n"
+            tool_context += "==============================\n"
 
         # Inject the thought instruction into the persona
         enhanced_persona = system_persona + _THOUGHT_INSTRUCTION
@@ -128,33 +146,3 @@ class VllmAdapter(LLMPromptPort):
             text = chunk.choices[0].delta.content
             if text:
                 yield text
-
-    # async def generate_response(
-    #     self,
-    #     *,
-    #     user_text: str,
-    #     history: List[ChatMessage],
-    #     tool_calls: List[ToolCall],
-    #     tool_results: List[ToolResult],
-    #     system_persona: str = _DEFAULT_PERSONA,
-    # ) -> str:
-    #     tool_context = ""
-    #     if tool_calls:
-    #         tool_context += "\nTool calls: " + json.dumps([_to_msg(tc) for tc in tool_calls], ensure_ascii=False)
-    #     if tool_results:
-    #         tool_context += "\nTool results: " + json.dumps([_to_msg(tr) for tr in tool_results], ensure_ascii=False)
-
-    #     enhanced_persona = system_persona + _THOUGHT_INSTRUCTION
-
-    #     messages: List[Dict[str, Any]] = [{"role": "system", "content": enhanced_persona + tool_context}]
-    #     messages += [_to_msg(m) for m in history]
-    #     messages.append({"role": "user", "content": user_text})
-
-    #     out = await self._client.chat.completions.create(
-    #         model=self._model,
-    #         messages=messages,
-    #         temperature=settings.llama_temperature_chat,
-    #         stream=False,
-    #     )
-
-    #     return out.choices[0].message.content.strip()

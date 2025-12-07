@@ -4,6 +4,7 @@
 #   "fastmcp",
 #   "httpx",
 #   "psutil", 
+#   "docker"
 # ]
 # ///
 
@@ -22,11 +23,14 @@ import tempfile
 import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+import shutil
+import re # Import re
 
 import httpx
 import psutil
 from fastmcp import FastMCP
-
+import docker
+from docker.errors import ContainerError, ImageNotFound, APIError
 # =============================================================================
 # CONFIGURATION & CONSTANTS
 # =============================================================================
@@ -132,7 +136,7 @@ def get_project_structure(max_depth: int = 2) -> str:
         return "Warning: No active project set. Use `set_active_project` first."
 
     # Use 'tree' command if available, otherwise fallback to simple list
-    if shutil := subprocess.which("tree"):
+    if shutil.which("tree"):
         return _run_subprocess(["tree", "-L", str(max_depth), "--noreport", str(project_path)])
     
     # Fallback python implementation
@@ -178,79 +182,114 @@ def read_project_file(relative_path: str) -> str:
 @mcp.tool()
 def execute_python(code: str, dependencies: List[str] = []) -> str:
     """
-    Executes Python code in a SECURE Docker sandbox.
-    When printing multi-line output, always use triple quotes for f-strings to prevent SyntaxError.
-
-    Capabilities:
-    1. If an active project is set, it is mounted at `/mnt/project` (Read-Only).
-    2. You can import modules from the project by adding `/mnt/project` to sys.path.
-    3. Use this to run diagnostics, static analysis, or unit tests on the user's code.
+    Executes Python code in a SECURE Docker sandbox using the Docker SDK.
+    
+    **CRITICAL: You MUST use `print()` to see results. STDOUT is captured separately.**
     """
     active_project = _get_active_project()
-    
-    # 1. Prepare script content
-    header = "# /// script\n# dependencies = [\n"
+    client = docker.from_env()
+
+    # 1. DEPENDENCY SANITIZER (Prevents "numpy.linalg" errors)
+    clean_deps = set()
     for dep in dependencies:
+        # Keep only the root package name (e.g. 'numpy.linalg' -> 'numpy')
+        root = dep.split('.')[0]
+        # Skip standard libs or suspicious inputs
+        if root.lower() not in ['os', 'sys', 're', 'math', 'json', 'random', 'time']:
+            clean_deps.add(root)
+            
+    header = "# /// script\n# dependencies = [\n"
+    for dep in clean_deps:
         header += f'#   "{dep}",\n'
     header += "# ]\n# ///\n\n"
-    
-    # Inject helper setup if project is active
+
+    # 2. Setup Code & F-String Fixer
     setup_code = ""
     if active_project:
-        setup_code = (
-            "import sys\n"
-            "sys.path.append('/mnt/project')\n"
-            "print(f'Info: Project mounted at /mnt/project')\n\n"
-        )
-
+        setup_code = "import sys\nsys.path.append('/mnt/project')\n\n"
+        
+    fstring_pattern = re.compile(r"f(['\"])(.*?\n.*?)\1", re.DOTALL)
+    code = fstring_pattern.sub(r"f'''\2'''", code)
+    
     full_script = header + setup_code + code
 
-    # 2. Create temp script on HOST
+    # 3. Create Temp File
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
         tmp.write(full_script)
         tmp_path_host = tmp.name
 
+    container = None
     try:
-        # 3. Construct Docker Command
-        cmd = [
-            "docker", "run", 
-            "--rm",
-            "--network", "host",
-            "--cpus", "1.0",
-            "--memory", "512m",
-            "-v", f"{tmp_path_host}:/app/script.py:ro",
-            "-v", f"{WORKSPACE_DIR}:/app/workspace",
-            "jarvis-sandbox",
-            "uv", "run", "/app/script.py"
-        ]
-        
-        # 4. Mount Active Project (Read-Only) if it exists
+        # 4. Define Volumes (SDK Format)
+        # Format: {HostPath: {'bind': ContainerPath, 'mode': 'ro/rw'}}
+        volumes = {
+            tmp_path_host: {'bind': '/app/script.py', 'mode': 'ro'},
+            str(WORKSPACE_DIR): {'bind': '/app/workspace', 'mode': 'rw'}
+        }
         if active_project:
-            cmd.insert(-3, "-v")
-            cmd.insert(-3, f"{active_project}:/mnt/project:ro")
+            volumes[str(active_project)] = {'bind': '/mnt/project', 'mode': 'ro'}
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60
+        # 5. Run Container (Detached for timeout control)
+        container = client.containers.run(
+            image="jarvis-sandbox",
+            command=["uv", "run", "/app/script.py"],
+            volumes=volumes,
+            network_mode="host",
+            mem_limit="512m",
+            nano_cpus=1000000000, # 1.0 CPU
+            detach=True,         # Run in background so we can wait()
+            remove=False         # Do not auto-remove yet (we need logs)
         )
-        
-        output = result.stdout
-        error = result.stderr
-        
-        if result.returncode != 0:
-            return f"Execution Failed:\n{error}\n{output}"
+
+        # 6. Wait with Timeout
+        try:
+            result = container.wait(timeout=60)
+            exit_code = result.get('StatusCode', 1)
+        except Exception: # Timed out
+            container.kill()
+            return "Error: Execution timed out (60s limit)."
+
+        # 7. Capture Output (STDOUT vs STDERR separation!)
+        # This is the magic fix for your "Silent Execution" issues.
+        stdout = container.logs(stdout=True, stderr=False).decode('utf-8', errors='replace').strip()
+        stderr = container.logs(stdout=False, stderr=True).decode('utf-8', errors='replace').strip()
+
+        if exit_code != 0:
+            error_msg = (
+                f"⚠️ CRITICAL EXECUTION FAILURE (Exit Code {exit_code}) ⚠️\n"
+                f"--------------------------------------------------\n"
+                f"{stderr}\n"
+                f"{stdout}\n"
+                f"--------------------------------------------------\n"
+                f"FIX: Analyze the Traceback above. Do not claim success."
+            )
+            return error_msg
+
+        # If we have stdout, return it (ignore stderr noise like 'Project mounted')
+        if stdout:
+            return f"Output:\n{stdout}"
             
-        return f"Output:\n{output}"
+        # If stdout is empty but we have stderr, warn the user
+        if stderr:
+             return f"Executed successfully, but STDOUT is empty.\n(System Logs: {stderr})\nDid you forget to print()?"
+        
+        return "Executed successfully. Output was empty."
 
-    except subprocess.TimeoutExpired:
-        return "Error: Timed out (60s limit)."
+    except ImageNotFound:
+        return "System Error: Docker image 'jarvis-sandbox' not found."
+    except APIError as e:
+        return f"Docker API Error: {str(e)}"
     except Exception as e:
-        return f"System Error: {e}"
+        return f"Unexpected Error: {str(e)}"
     finally:
+        # Cleanup
+        if container:
+            try:
+                container.remove(force=True)
+            except:
+                pass
         Path(tmp_path_host).unlink(missing_ok=True)
-
+        
 @mcp.tool()
 def list_workspace_files() -> str:
     """Lists files available in the engineering workspace (persistent storage)."""
@@ -313,11 +352,21 @@ def manage_todos(action: str, task_content: str = "", task_id: int = -1) -> str:
 # SYSTEM OPERATIONS
 # =============================================================================
 
+def _bytes_to_gb(bytes_val: int) -> float:
+    return round(bytes_val / (1024 ** 3), 2)
+
 @mcp.tool()
 def get_system_health() -> str:
-    """Returns CPU/RAM/Disk stats."""
-    return f"CPU: {psutil.cpu_percent()}% | RAM: {psutil.virtual_memory().percent}%"
-
+    """Returns detailed CPU, RAM, and Disk stats in GB."""
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    return (
+        f"CPU Load: {psutil.cpu_percent()}%\n"
+        f"RAM: {mem.percent}% Used | Total: {_bytes_to_gb(mem.total)}GB | Available: {_bytes_to_gb(mem.available)}GB\n"
+        f"Disk: {disk.percent}% Used | Free: {_bytes_to_gb(disk.free)}GB"
+    )
+    
 @mcp.tool()
 def run_shell_command(command: str) -> str:
     """Executes safe shell commands."""
