@@ -54,7 +54,8 @@ The project is structured as follows:
 To start the desktop server:
 
 ```bash
-python uvicorn app.main:app --reload --port 8080
+python 
+uvicorn app.main:app --reload --port 8080
 ```
 
 ## License

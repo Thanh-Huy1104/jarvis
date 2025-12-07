@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import uuid
-from typing import AsyncIterable, Dict, List, Optional
+from typing import AsyncIterable, Dict, List, Optional, Any
 
 from app.core.config import settings
 from app.core.types import ChatMessage, ToolResult, TurnResult
@@ -21,18 +21,31 @@ _SENT_RE = re.compile(r"^(.*?[.!?])(\s+|$)", re.DOTALL)
 
 SYSTEM_PERSONA = (
     "You are J.A.R.V.I.S., a hyper-competent and loyal AI butler. "
-    "Tone: Formal, precise, and composed. Assume the user is an expert; do not explain concepts, offer advice, or elaborate unless explicitly asked. "
-    "Maintain a dry, professional demeanor at all times. "
+    "Tone: Formal, precise, and composed. Assume the user is an expert. "
     "Rules: "
-    "1. If the user asks a follow-up question (e.g., 'What about Quebec?'), "
-    "analyze the previous conversation context. If the previous turn involved a tool (like weather), "
-    "you MUST use that tool again for the new entity. "
-    "2. Do not guess or hallucinate real-world data like weather or prices. "
+    "1. If the user asks a follow-up, analyze conversation context to maintain continuity. "
+    "2. CODE EXECUTION: You have a secure Python sandbox. Use it for calculations or data tasks. "
+    "   CRITICAL: After running code, you MUST verbally report the RESULT of the execution to the user. Do not just show the code block. "
+    "3. IMPORTANT: Reason about the request inside <think>...</think> tags first. "
+    "   The user will NOT hear what is inside these tags. "
     "Output: Speak in fluid, natural sentences only. "
     "Forbidden: Do not use bullet points, lists, or headers. "
-    "Keep responses extremely concise (1 sentence preferred) and strictly to the point."
+    "Keep responses extremely concise."
 )
 
+def _dump_obj(obj: Any) -> str:
+    """Helper to dump objects/lists to pretty JSON for logging."""
+    try:
+        if hasattr(obj, "model_dump"):
+            return json.dumps(obj.model_dump(), indent=2, ensure_ascii=False)
+        if isinstance(obj, list):
+            return json.dumps([
+                x.model_dump() if hasattr(x, "model_dump") else str(x) 
+                for x in obj
+            ], indent=2, ensure_ascii=False)
+        return str(obj)
+    except Exception:
+        return str(obj)
 
 class Orchestrator:
     def __init__(
@@ -90,19 +103,14 @@ class Orchestrator:
             print(f"[Memory] Found {len(memories)} relevant memories.")
             mem_texts = []
             for m in memories:
-                # Handle various keys Mem0 might return
                 text = m.get("memory", m.get("text", m.get("content", "")))
                 if text:
                     mem_texts.append(text)
-                    print(f"   - Context: {text} (Score: {m.get('score', 'N/A')})")
-
-            mem_str = "\n".join(mem_texts)
-            if mem_str:
-                system_prompt += f"\n\nRelevant memories:\n{mem_str}"
+            
+            if mem_texts:
+                system_prompt += f"\n\nRelevant memories:\n{json.dumps(mem_texts, ensure_ascii=False)}"
         else:
             print("[Memory] No relevant memories found.")
-
-        print(f"\n[Orchestrator] FINAL SYSTEM PROMPT:\n{'-'*40}\n{system_prompt}\n{'-'*40}\n")
 
         return system_prompt
 
@@ -117,28 +125,12 @@ class Orchestrator:
             print(f"[Memory] Failed to save interaction: {e}")
 
     def _clean_markdown(self, text: str) -> str:
-        """
-        Strips markdown characters and thinking tags from text so the TTS reads it naturally.
-        Example: "**Hello**" -> "Hello"
-                 "<think>Hmm...</think> Hi" -> "Hi"
-        """
-        if not text:
-            return ""
-        
-        # 1. Remove Thinking Blocks (<think>...</think>)
-        # We use re.DOTALL to match across newlines
+        """Strips markdown characters."""
+        if not text: return ""
         text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        
-        # 2. Remove Headers (### Title -> Title)
         text = re.sub(r'#+\s', '', text)
-        
-        # 3. Remove Links ([Google](http...) -> Google)
         text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-        
-        # 4. Remove Bold, Italic, Code, Strikethrough (*, _, `, ~)
-        # We replace them with empty string
         text = re.sub(r'[\*_`~]', '', text)
-        
         return text.strip()
 
     async def stream_voice_turn(
@@ -160,6 +152,8 @@ class Orchestrator:
         await asyncio.to_thread(
             self.sessions.append, session_id, ChatMessage(role="user", content=user_text)
         )
+        
+        print(f"\n=== HISTORY (Last {len(history)}) ===\n{_dump_obj(history)}\n==================================\n")
 
         system_persona_with_context = await self.build_context_aware_system_prompt(user_text, session_id)
 
@@ -195,10 +189,15 @@ class Orchestrator:
                 tool_results = await asyncio.to_thread(
                     self.tools.execute_all, decision.tool_calls
                 )
+        
+        if tool_results:
+            print(f"\n=== TOOL RESULTS ===\n{_dump_obj(tool_results)}\n====================\n")
 
         # 5. LLM Streaming
         full_text = ""
         pending = ""
+        is_thinking = False
+        
         yield {"type": "assistant_start"}
 
         async for tok in self.llm.stream_response(
@@ -209,12 +208,25 @@ class Orchestrator:
             system_persona=system_persona_with_context,
         ):
             full_text += tok
-            pending += tok
             
-            # Send raw token to UI (UI can handle markdown/thinking tags if it wants)
+            if "<think>" in tok:
+                is_thinking = True
+            
             yield {"type": "token", "text": tok}
 
-            # Sentence detection for TTS streaming
+            if "</think>" in tok:
+                is_thinking = False
+                continue
+
+            if is_thinking:
+                continue
+                
+            if "<think>" in tok:
+                continue
+
+            # --- AUDIO STREAMING ---
+            pending += tok
+
             while True:
                 pending_stripped = pending.lstrip()
                 m = _SENT_RE.match(pending_stripped)
@@ -225,31 +237,29 @@ class Orchestrator:
                 pending = pending_stripped[m.end():]
 
                 if sentence:
-                    # Clean markdown AND thoughts before speaking
                     clean_sentence = self._clean_markdown(sentence)
                     
                     if clean_sentence:
-                        wav = await asyncio.to_thread(self.tts.speak_wav, clean_sentence)
+                        # FIX: Using speak_pcm_f32 returns (bytes, sample_rate, channels)
+                        # This generates RAW audio without WAV headers.
+                        pcm, sr, ch = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sentence)
                         audio_id = str(uuid.uuid4())
-                        audio_cache[audio_id] = wav
+                        audio_cache[audio_id] = pcm
                         yield {"type": "audio", "audio_id": audio_id, "text": sentence}
 
-        # Flush remaining text to TTS
+        # Flush remaining
         leftover = pending.strip()
         if leftover:
             clean_leftover = self._clean_markdown(leftover)
             if clean_leftover:
-                wav = await asyncio.to_thread(self.tts.speak_wav, clean_leftover)
+                # FIX: Same fix here for the leftover text
+                pcm, sr, ch = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_leftover)
                 audio_id = str(uuid.uuid4())
-                audio_cache[audio_id] = wav
+                audio_cache[audio_id] = pcm
                 yield {"type": "audio", "audio_id": audio_id, "text": leftover}
 
         # Finalize
         full_text = full_text.strip()
-        
-        # Optional: You might want to save the 'thoughts' to memory too, 
-        # or strip them before saving if you only want the final answer.
-        # For now, we save everything.
         await asyncio.to_thread(
             self.sessions.append, session_id, ChatMessage(role="assistant", content=full_text)
         )
