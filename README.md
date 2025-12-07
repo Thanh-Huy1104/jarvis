@@ -1,8 +1,6 @@
 # Jarvis
 
-<div align="center">
-  <img src="https://place-your-banner-url-here.com" alt="Jarvis Banner">
-</div>
+![GitHub Banner](./banner.png)
 
 <p align="center">
   <strong>A voice-powered AI assistant.</strong>
@@ -43,7 +41,7 @@ The project is structured as follows:
 
 1.  Clone the repository:
     ```bash
-    git clone https://your-repository-url.com
+    git clone https://github.com/Thanh-Huy1104/jarvis.git
     cd jarvis
     ```
 2.  Install the dependencies:
@@ -56,7 +54,7 @@ The project is structured as follows:
 To start the desktop server:
 
 ```bash
-python servers/desktop/server.py
+python uvicorn app.main:app --reload --port 8080
 ```
 
 ## License
