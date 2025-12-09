@@ -20,7 +20,7 @@ class ToolDecision(BaseModel):
     intent: Literal["tool", "chat"] = "chat"
     tool_calls: List[ToolCall] = Field(default_factory=list)
     assistant_hint: Optional[str] = None
-
+    thought: Optional[str] = None
 
 class ToolResult(BaseModel):
     name: str

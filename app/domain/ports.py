@@ -2,7 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, Dict, List, Optional, Tuple
 
-from app.core.types import ChatMessage, ToolCall, ToolDecision, ToolResult
+from app.core.types import ChatMessage, ToolDecision
 
 class SessionStorePort(ABC):
     @abstractmethod
@@ -19,24 +19,31 @@ class STTPort(ABC):
 
 class LLMPromptPort(ABC):
     @abstractmethod
-    async def decide_tools(
+    async def decide_next_step(
         self,
         *,
         user_text: str,
-        history: List[ChatMessage],
+        history: List[Any], # Accepts List[ChatMessage] or List[Dict]
         tool_schemas: List[Dict[str, Any]],
-    ) -> ToolDecision: ...
+        memories: List[str], # <--- NEW: Required for Memory Injection
+    ) -> ToolDecision:
+        """
+        Analyzes context and decides the immediate next step (Tool or Chat).
+        """
+        ...
 
     @abstractmethod
     async def stream_response(
         self,
         *,
         user_text: str,
-        history: List[ChatMessage],
-        tool_calls: List[ToolCall],
-        tool_results: List[ToolResult],
+        history: List[Any],
         system_persona: str,
-    ) -> AsyncIterable[str]: ...
+    ) -> AsyncIterable[str]: 
+        """
+        Streams the final verbal response. Context is now embedded in system_persona.
+        """
+        ...
 
 
 class TTSPort(ABC):
@@ -51,10 +58,10 @@ class TTSPort(ABC):
 
 class ToolsPort(ABC):
     @abstractmethod
-    def list_tools(self) -> List[Dict[str, Any]]: ...
+    async def list_tools(self) -> List[Dict[str, Any]]: ...
 
     @abstractmethod
-    def call_tool(self, name: str, args: dict) -> str:
+    async def call_tool(self, name: str, args: dict) -> str:
         ...
 
 

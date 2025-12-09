@@ -1,25 +1,43 @@
-# Web
+# --- Core Orchestration & Graph ---
+langgraph
+langgraph-checkpoint-sqlite
+langchain-core
+aiosqlite
+
+# --- Web Server & API ---
 fastapi
 uvicorn[standard]
 websockets
+python-multipart
 
-# AI Models & Adapters
-faster-whisper
-openai
-kokoro_onnx
-
-# Config & Core
+# --- AI & LLM Clients ---
+openai                  # Client for vLLM
+pydantic>=2.0
 pydantic-settings
 
-# Audio
+# --- Observability (The "Eye") ---
+arize-phoenix           # Visual Dashboard
+openinference-instrumentation-langchain
+
+# --- Memory (The "Context") ---
+mem0ai                  # Main Mem0 wrapper
+qdrant-client           # Vector Database
+sentence-transformers   # Embeddings for Memory
+
+# --- Tools & Sandbox (The "Body") ---
+docker                  # Python Docker SDK for Sandbox
+fastmcp                 # Quick MCP Server creation
+mcp                     # Model Context Protocol
+psutil                  # System Health Tool
+
+# --- Audio: STT (Hearing) ---
+faster-whisper
+numpy<2.0.0
+
+# --- Audio: TTS (Speaking) ---
+kokoro-onnx
 soundfile
-numpy
 
-# mem0 Setup
-qdrant-client 
-sentence-transformers
-
-#mcp
-mcp
-uv
-docker
+# --- Utilities ---
+python-dotenv           # Environment variables
+uv                      # Dependency manager (required by FastMCP)

@@ -13,59 +13,24 @@ from app.domain.ports import TTSPort
 
 
 def _remove_dc(x: np.ndarray) -> np.ndarray:
-    # Remove DC offset (prevents some “pop” cases)
-    if x.size == 0:
-        return x
+    if x.size == 0: return x
     return (x - float(np.mean(x))).astype(np.float32, copy=False)
 
-
-def _fade_in_out(
-    x: np.ndarray,
-    sr: int,
-    fade_in_ms: float = 4.0,
-    fade_out_ms: float = 28.0,
-) -> np.ndarray:
+def _fade_in_out(x: np.ndarray, sr: int, fade_ms: float = 4.0) -> np.ndarray:
+    # Gentle ramp to prevent clicks at start/end of buffer
     x = np.asarray(x, dtype=np.float32).reshape(-1).copy()
     n = x.shape[0]
-    if n == 0:
-        return x
-
-    fi = int(sr * (fade_in_ms / 1000.0))
-    fo = int(sr * (fade_out_ms / 1000.0))
-
-    fi = min(fi, n)
-    fo = min(fo, n)
-
-    if fi >= 2:
-        ramp = np.linspace(0.0, 1.0, fi, dtype=np.float32)
-        x[:fi] *= ramp
-
-    if fo >= 2:
-        ramp = np.linspace(1.0, 0.0, fo, dtype=np.float32)
-        x[-fo:] *= ramp
-
+    if n == 0: return x
+    
+    samples = int(sr * (fade_ms / 1000.0))
+    samples = min(samples, n)
+    
+    if samples >= 2:
+        ramp = np.linspace(0.0, 1.0, samples, dtype=np.float32)
+        x[:samples] *= ramp
+        x[-samples:] *= ramp[::-1]
+    
     return x
-
-
-def _hard_gate_tail(x: np.ndarray, sr: int, gate_ms: float = 4.0) -> np.ndarray:
-    # Ensure the last few ms are exactly zero (removes residual clicks)
-    x = np.asarray(x, dtype=np.float32).reshape(-1).copy()
-    n = x.shape[0]
-    if n == 0:
-        return x
-    g = int(sr * (gate_ms / 1000.0))
-    if g > 0:
-        g = min(g, n)
-        x[-g:] = 0.0
-    return x
-
-
-def _append_silence(x: np.ndarray, sr: int, tail_ms: float = 35.0) -> np.ndarray:
-    tail = int(sr * (tail_ms / 1000.0))
-    if tail <= 0:
-        return x.astype(np.float32, copy=False)
-    return np.concatenate([x.astype(np.float32, copy=False), np.zeros(tail, dtype=np.float32)], axis=0)
-
 
 class KokoroAdapter(TTSPort):
     def __init__(self) -> None:
@@ -80,7 +45,6 @@ class KokoroAdapter(TTSPort):
                 speed=settings.kokoro_speed,
                 lang=settings.kokoro_lang,
             )
-
         buf = io.BytesIO()
         sf.write(buf, samples, int(sample_rate), format="WAV")
         return buf.getvalue()
@@ -95,13 +59,13 @@ class KokoroAdapter(TTSPort):
             )
 
         sr = int(sample_rate)
+        # Ensure flat float32 array
         arr = np.asarray(samples, dtype=np.float32).reshape(-1)
 
-        # Strong boundary conditioning for chunked playback
+        # Apply Audio Cleaning
         arr = _remove_dc(arr)
-        arr = _fade_in_out(arr, sr, fade_in_ms=4.0, fade_out_ms=28.0)
-        arr = _hard_gate_tail(arr, sr, gate_ms=4.0)
-        arr = _append_silence(arr, sr, tail_ms=35.0)
+        arr = _fade_in_out(arr, sr, fade_ms=5.0)
 
-        pcm_bytes = arr.astype("<f4", copy=False).tobytes()
+        # Convert to raw bytes
+        pcm_bytes = arr.tobytes()
         return pcm_bytes, sr, 1

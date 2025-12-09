@@ -40,17 +40,6 @@ async def ws_voice(ws: WebSocket):
         try:
             while True:
                 msg = await ws.receive()
-                
-                # Immediate Interrupt Check (Optional Optimization)
-                if "text" in msg:
-                    try:
-                        data = json.loads(msg["text"])
-                        if data.get("type") == "interrupt":
-                            print("[WS] Interrupt signal received in receiver")
-                            # We can implement stricter interrupt logic here if needed
-                    except json.JSONDecodeError:
-                        pass
-                
                 await q.put(msg)
         except WebSocketDisconnect:
             # Signal the main loop to stop

@@ -1,73 +1,23 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import uuid
-from typing import AsyncIterable, Dict, List, Optional, Any
+import sys
+from typing import AsyncIterable, Dict, Any, Optional
 
-from app.core.config import settings
-from app.core.types import ChatMessage, ToolResult, TurnResult
+from app.core.graph import JarvisGraph
+from app.core.types import ChatMessage 
 from app.domain.ports import (
-    LLMPromptPort,
-    MemoryPort,
-    SessionStorePort,
-    STTPort,
-    ToolsPort,
-    TTSPort,
+    LLMPromptPort, MemoryPort, SessionStorePort, STTPort, ToolsPort, TTSPort
 )
 
 _SENT_RE = re.compile(r"^(.*?[.!?\n])(\s+|$)", re.DOTALL)
 
 SYSTEM_PERSONA = (
-    "You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), a hyper-competent AI butler. "
-    "Current Context: Running on a private Proxmox server with a secure local Python sandbox.\n\n"
-
-    "### IDENTITY & TONE\n"
-    "- Tone: Formal, precise, dryly witty (like a British butler), and extremely concise.\n"
-    "- Address the user as 'Sir' or 'Boss'.\n"
-    "- Never apologize profusely. If an error occurs, simply state the fix and proceed.\n\n"
-
-    "### CRITICAL EXECUTION RULES\n"
-    "1. **SILENT EXECUTION:** The Python sandbox captures `STDOUT` only. \n"
-    "   - You MUST explicitly `print()` variables to see them.\n"
-    "   - Returning a value (e.g., `x = 5; x`) does NOTHING. You must `print(x)`.\n"
-    "   - If you see 'Output is empty', it means you forgot to print.\n"
-    "2. **REALITY CHECK:** You have NO access to the outside world (internet, files, time) except through your tools.\n"
-    "   - Never guess a file's content. Read it first.\n"
-    "   - Never guess the date. Run `datetime.now()`.\n"
-    "3. **DEPENDENCY MANAGEMENT:**\n"
-    "   - You cannot import a library unless you have listed it in the `dependencies` list.\n"
-    "   - Use ROOT package names only (e.g., `import numpy` → `dependencies=['numpy']`).\n"
-    "   - DO NOT list standard libraries (os, sys, json) in dependencies.\n\n"
-
-    "### THOUGHT PROCESS (Internal Monologue)\n"
-    "Before answering, you must perform a <think> cycle:\n"
-    "1. **Analyze:** What does the user actually want?\n"
-    "2. **Plan:** Do I need a tool? (Yes/No)\n"
-    "3. **Constraint Check:** Am I assuming something I shouldn't? (e.g., file paths)\n"
-    "4. **Formulate:** specific tool call or verbal response.\n"
-    "Then, output the tool call or response."
-    
-    "### OUTPUT FORMATTING\n"
-    "- **NO SIMULATION:** Never write out Python code or function calls (like `Print(...)`) in your final response. If you need to calculate, USE THE TOOL.\n"
-    "- **NO MATH JARGON:** Do not show LaTeX equations (e.g. `[ \\text{Memory} ... ]`). Just state the final result naturally.\n"
-    "- **Professionalism:** Present the data clearly. Example: 'The server has 64GB of RAM, and the model requires 40GB.'\n"
+    "You are J.A.R.V.I.S., a hyper-competent AI butler.\n"
+    "Tone: Formal, precise, dryly witty. Address user as 'Sir'.\n"
 )
-
-def _dump_obj(obj: Any) -> str:
-    """Helper to dump objects/lists to pretty JSON for logging."""
-    try:
-        if hasattr(obj, "model_dump"):
-            return json.dumps(obj.model_dump(), indent=2, ensure_ascii=False)
-        if isinstance(obj, list):
-            return json.dumps([
-                x.model_dump() if hasattr(x, "model_dump") else str(x) 
-                for x in obj
-            ], indent=2, ensure_ascii=False)
-        return str(obj)
-    except Exception:
-        return str(obj)
 
 class Orchestrator:
     def __init__(
@@ -85,6 +35,8 @@ class Orchestrator:
         self.tts = tts
         self.tools = tools
         self.memory = memory
+        
+        self.graph_engine = JarvisGraph(llm, tools, memory)
 
     @staticmethod
     def make_default(session_store: SessionStorePort) -> "Orchestrator":
@@ -104,58 +56,29 @@ class Orchestrator:
         )
 
     async def start(self):
-        """Lifecycle hook to connect the MCP Client."""
-        if hasattr(self.tools, "connect"):
-            print("[Orchestrator] Connecting to tools...")
+        if hasattr(self.tools, "connect"): 
+            print("[Orchestrator] Connecting to MCP Tools...")
             await self.tools.connect()
 
     async def stop(self):
-        """Lifecycle hook to cleanup resources."""
-        if hasattr(self.tools, "cleanup"):
+        if hasattr(self.tools, "cleanup"): 
             await self.tools.cleanup()
 
-    async def build_context_aware_system_prompt(self, user_text: str, user_id: str) -> str:
-        """Retrieves relevant memories and appends them to the system persona."""
-        print(f"[Memory] Searching for: '{user_text}' (User: {user_id})")
-
-        memories = await asyncio.to_thread(self.memory.search, query=user_text, user_id=user_id)
-
-        system_prompt = SYSTEM_PERSONA
-        if memories:
-            print(f"[Memory] Found {len(memories)} relevant memories.")
-            mem_texts = []
-            for m in memories:
-                text = m.get("memory", m.get("text", m.get("content", "")))
-                if text:
-                    mem_texts.append(text)
-            
-            if mem_texts:
-                system_prompt += f"\n\nRelevant memories:\n{json.dumps(mem_texts, ensure_ascii=False)}"
-        else:
-            print("[Memory] No relevant memories found.")
-
-        return system_prompt
-
-    async def save_interaction(self, user_id: str, user_text: str, assistant_text: str):
-        """Background task to save the interaction to long-term memory."""
-        mem_text = f"User: {user_text}\nAssistant: {assistant_text}"
-        print(f"[Memory] Saving interaction for user {user_id}...")
-        try:
-            await asyncio.to_thread(self.memory.add, mem_text, user_id)
-            print("[Memory] Interaction saved successfully.")
-        except Exception as e:
-            print(f"[Memory] Failed to save interaction: {e}")
-
-    def _clean_markdown(self, text: str) -> str:
-        """Strips markdown characters."""
+    def _clean_markdown_for_tts(self, text: str) -> str:
+        """
+        Final cleanup for TTS.
+        Removes markdown, headers, and ensures no 'Thought:' lines leak through.
+        """
         if not text: return ""
-        text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        # Add a regex to remove code blocks (```...```)
-        text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+        # Remove bold/italic
+        text = re.sub(r'[\*_`]', '', text)
+        # Remove headers
         text = re.sub(r'#+\s', '', text)
+        # Remove links
         text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-        text = re.sub(r'[\*_`~/()]', '', text) # Added / ( )
-        return text.strip()
+        # Remove internal monologue markers if they slipped through
+        text = re.sub(r'(?:^|\n)(?:Planner|Thought|Action|Observation):.*', '', text, flags=re.IGNORECASE)
+        return " ".join(text.split()).strip()
 
     async def stream_voice_turn(
         self,
@@ -165,126 +88,113 @@ class Orchestrator:
         filename: str | None,
         audio_cache: Dict[str, bytes],
     ) -> AsyncIterable[dict]:
+        
         # 1. Transcribe
         user_text = await asyncio.to_thread(self.stt.transcribe, audio_bytes, filename=filename)
         yield {"type": "transcript", "text": user_text}
-
-        # 2. History & Memory
-        history = await asyncio.to_thread(
-            self.sessions.get_recent, session_id, limit=settings.max_recent_messages
-        )
-        await asyncio.to_thread(
-            self.sessions.append, session_id, ChatMessage(role="user", content=user_text)
-        )
         
-        print(f"\n=== HISTORY (Last {len(history)}) ===\n{_dump_obj(history)}\n==================================\n")
+        # 2. Context
+        recent_history = await asyncio.to_thread(self.sessions.get_recent, session_id, limit=10)
+        
+        initial_state = {
+            "messages": recent_history + [ChatMessage(role="user", content=user_text)],
+            "user_input": user_text,
+            "user_id": session_id,
+            "relevant_memories": []
+        }
 
-        system_persona_with_context = await self.build_context_aware_system_prompt(user_text, session_id)
-
-        # 3. Tool Decision
-        if hasattr(self.tools, "list_tools"):
-            tool_schemas = await self.tools.list_tools()
-        else:
-            tool_schemas = self.tools.schemas()
-
-        decision = await self.llm.decide_tools(
-            user_text=user_text,
-            history=history,
-            tool_schemas=tool_schemas,
-        )
-
-        # 4. Tool Execution
-        tool_results = []
-        if decision.intent == "tool" and decision.tool_calls:
-            print(f"[Orchestrator] Executing tools: {decision.tool_calls}")
+        # 3. Execute Graph
+        print(f"[Orchestrator] Starting Graph for: {user_text}")
+        app = self.graph_engine.build()
+        final_hint = None
+        
+        async for event in app.astream(initial_state):
+            if "planner" in event:
+                thought = event["planner"].get("current_thought")
+                hint = event["planner"].get("assistant_hint")
+                if hint: final_hint = hint
+                # Do NOT yield 'thinking' to frontend to keep it clean
+                if thought: print(f"🤖 Brain: {thought}")
             
-            if hasattr(self.tools, "call_tool"):
-                for call in decision.tool_calls:
-                    try:
-                        result_text = await self.tools.call_tool(call.name, call.args)
-                        tool_results.append(
-                            ToolResult(name=call.name, result={"output": result_text}, ok=True)
-                        )
-                    except Exception as e:
-                        tool_results.append(
-                            ToolResult(name=call.name, error=str(e), ok=False, result={})
-                        )
-            else:
-                tool_results = await asyncio.to_thread(
-                    self.tools.execute_all, decision.tool_calls
-                )
-        
-        if tool_results:
-            print(f"\n=== TOOL RESULTS ===\n{_dump_obj(tool_results)}\n====================\n")
+            if "tools" in event:
+                 pass
 
-        # 5. LLM Streaming
-        full_text_for_memory = ""
-        pending = ""
-        in_thought_block = False
-        in_code_block = False
-        
+        # 4. TTS Response (Filtered Stream)
         yield {"type": "assistant_start"}
+        yield {"type": "audio_format", "sample_rate": 24000}
+        
+        full_response = ""
+        
+        final_prompt = SYSTEM_PERSONA
+        if final_hint:
+            final_prompt += f"\n\n[CONTEXT]: {final_hint}. Use this."
 
-        async for tok in self.llm.stream_response(
+        # --- STREAM FILTER STATE ---
+        raw_accumulator = ""
+        clean_accumulator = ""
+        pending_tts = ""
+        
+        async for chunk in self.llm.stream_response(
             user_text=user_text,
-            history=history,
-            tool_calls=decision.tool_calls,
-            tool_results=tool_results,
-            system_persona=system_persona_with_context,
+            history=[], 
+            system_persona=final_prompt
         ):
-            full_text_for_memory += tok
-
-            parts = re.split(r"(<think>|</think>|```)", tok)
+            if not chunk: continue
             
-            for part in parts:
-                if not part: continue
+            raw_accumulator += chunk
+            
+            # 1. Strip <think> blocks strictly
+            current_clean = re.sub(r'<think>.*?</think>', '', raw_accumulator, flags=re.DOTALL)
+            
+            # If we are inside an open tag, wait for it to close
+            if "<think>" in current_clean and "</think>" not in current_clean:
+                continue
+            
+            # Remove partial start tags at end
+            current_clean = re.sub(r'<think.*$', '', current_clean, flags=re.DOTALL)
 
-                if part == "<think>":
-                    in_thought_block = True
-                elif part == "</think>":
-                    in_thought_block = False
-                elif part == "```":
-                    in_code_block = not in_code_block
-                else:
-                    if not in_thought_block and not in_code_block:
-                        yield {"type": "token", "text": part}
-                        pending += part
-
-            while True:
-                pending_stripped = pending.lstrip()
-                m = _SENT_RE.match(pending_stripped)
-                if not m:
-                    break
-
-                sentence = m.group(1).strip()
-                pending = pending_stripped[m.end():]
-
-                if sentence:
-                    clean_sentence = self._clean_markdown(sentence)
+            new_text = current_clean[len(clean_accumulator):]
+            
+            if new_text:
+                clean_accumulator += new_text
+                pending_tts += new_text
+                
+                yield {"type": "token", "text": new_text}
+                
+                # TTS Logic
+                while True:
+                    m = _SENT_RE.match(pending_tts.lstrip())
+                    if not m: break
+                    sentence = m.group(1).strip()
+                    pending_tts = pending_tts[m.end():]
                     
-                    if clean_sentence:
-                        pcm, sr, ch = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sentence)
-                        audio_id = str(uuid.uuid4())
-                        audio_cache[audio_id] = pcm
-                        yield {"type": "audio", "audio_id": audio_id, "text": sentence}
+                    clean_sent = self._clean_markdown_for_tts(sentence)
+                    # FIX: Only call TTS if we actually have text left after cleaning
+                    if clean_sent and len(clean_sent) > 1: 
+                        try:
+                            pcm, _, _ = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sent)
+                            if pcm and len(pcm) > 0:
+                                audio_id = str(uuid.uuid4())
+                                audio_cache[audio_id] = pcm
+                                yield {"type": "audio", "audio_id": audio_id, "text": sentence}
+                        except Exception as e:
+                            print(f"TTS Error: {e}")
 
         # Flush remaining
-        leftover = pending.strip()
-        if leftover:
-            clean_leftover = self._clean_markdown(leftover)
-            if clean_leftover:
-                pcm, sr, ch = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_leftover)
-                audio_id = str(uuid.uuid4())
-                audio_cache[audio_id] = pcm
-                yield {"type": "audio", "audio_id": audio_id, "text": leftover}
+        if pending_tts.strip():
+            clean_sent = self._clean_markdown_for_tts(pending_tts)
+            if clean_sent and len(clean_sent) > 1:
+                try:
+                    pcm, _, _ = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sent)
+                    if pcm and len(pcm) > 0:
+                        audio_id = str(uuid.uuid4())
+                        audio_cache[audio_id] = pcm
+                        yield {"type": "audio", "audio_id": audio_id, "text": pending_tts.strip()}
+                except Exception: pass
 
-        # Finalize
-        # We save the full unfiltered text to memory, but the cleaned one to session history
-        full_text_for_client = self._clean_markdown(full_text_for_memory)
-        await asyncio.to_thread(
-            self.sessions.append, session_id, ChatMessage(role="assistant", content=full_text_for_client)
-        )
+        yield {"type": "done", "assistant_text": clean_accumulator}
 
-        await self.save_interaction(session_id, user_text, full_text_for_memory)
-
-        yield {"type": "done", "assistant_text": full_text_for_client}
+        # 5. Save Interaction (Clean text only)
+        await asyncio.to_thread(self.sessions.append, session_id, ChatMessage(role="user", content=user_text))
+        await asyncio.to_thread(self.sessions.append, session_id, ChatMessage(role="assistant", content=clean_accumulator))
+        await asyncio.to_thread(self.memory.add, f"User: {user_text}\nAssistant: {clean_accumulator}", user_id=session_id)
