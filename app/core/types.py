@@ -1,37 +1,14 @@
-from __future__ import annotations
-from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any
 
-
-Role = Literal["system", "user", "assistant", "tool"]
-
-
+# Simple Pydantic model for storage/API
 class ChatMessage(BaseModel):
-    role: Role
+    role: str
     content: str
 
-
+# We can keep these for explicit typing if needed elsewhere, 
+# but the Graph mostly uses LangChain types (AIMessage, HumanMessage) internally.
 class ToolCall(BaseModel):
     name: str
-    args: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ToolDecision(BaseModel):
-    intent: Literal["tool", "chat"] = "chat"
-    tool_calls: List[ToolCall] = Field(default_factory=list)
-    assistant_hint: Optional[str] = None
-    thought: Optional[str] = None
-
-class ToolResult(BaseModel):
-    name: str
-    ok: bool
-    result: Dict[str, Any] = Field(default_factory=dict)
-    error: Optional[str] = None
-
-
-class TurnResult(BaseModel):
-    user_text: str
-    assistant_text: str
-    tool_calls: List[ToolCall] = Field(default_factory=list)
-    tool_results: List[ToolResult] = Field(default_factory=list)
-    audio_wav_bytes: bytes
+    args: Dict[str, Any]
+    id: Optional[str] = None

@@ -22,7 +22,7 @@ class Mem0Adapter(MemoryPort):
             "llm": {
                 "provider": "openai",
                 "config": {
-                    "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+                    "model": "Qwen/Qwen3-14B-AWQ",
                     "temperature": 0.1,
                     "max_tokens": 1000,
                     "openai_base_url": "http://localhost:8000/v1",
@@ -59,9 +59,6 @@ class Mem0Adapter(MemoryPort):
             return []
         try:
             results = self.client.search(query, user_id=user_id, limit=limit)
-            
-            # DEBUG: Print to help diagnose return types
-            print(f"[Mem0 DEBUG] Search returned type: {type(results)}")
 
             # If we don't do this, iterating over 'results' just gives us the key strings ("results")
             if isinstance(results, dict):

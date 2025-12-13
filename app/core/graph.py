@@ -1,84 +1,117 @@
 import asyncio
-from langgraph.graph import StateGraph, END
+import logging
+from typing import Literal
+
+from langgraph.graph import StateGraph, END, START
+from langchain_core.messages import ToolMessage, HumanMessage
+
 from app.core.state import AgentState
-from app.core.types import ChatMessage
+
+logger = logging.getLogger(__name__)
 
 class JarvisGraph:
     def __init__(self, llm, tools, memory):
         self.llm = llm
-        self.tools = tools
+        self.tools = tools # This is the MCP Client
         self.memory = memory
 
-    async def planner_node(self, state: AgentState):
-        # 1. READ MEMORY
-        memories = state.get("relevant_memories", [])
-        if not memories:
-            memories = await asyncio.to_thread(self.memory.search, state["user_input"], state["user_id"])
+        # Basic System Prompt for the ReAct Agent
+        self.system_prompt = (
+            "You are Jarvis, an intelligent home assistant. "
+            "You have access to tools to help the user. "
+            "If you need information, CALL THE TOOL. Do not hallucinate.\n"
+            "If you are writing code, use the `execute_python` tool. "
+            "Always print the final result in python scripts.\n"
+            "Keep chat responses concise and warm."
+        )
 
-        # 2. PLAN
-        decision = await self.llm.decide_next_step(
-            user_text=state["user_input"],
-            history=state["messages"],
-            tool_schemas=await self.tools.list_tools(),
-            memories=memories
+    async def agent_node(self, state: AgentState):
+        """
+        Decides the next action: Text Response OR Tool Call(s).
+        """
+        messages = state["messages"]
+        
+        # 1. Fetch relevant memories (Simple context injection)
+        # Only search memory on the FIRST turn to avoid redundant DB hits
+        if len(messages) == 1 and isinstance(messages[0], HumanMessage):
+             memories = await asyncio.to_thread(
+                 self.memory.search, state["user_input"], state["user_id"]
+             )
+             if memories:
+                 # In a production app, we might insert a SystemMessage with context here
+                 # For now, we rely on the memory being available in the graph state if we needed it
+                 pass 
+
+        # 2. Get available tools
+        available_tools = await self.tools.list_tools()
+
+        # 3. Invoke LLM
+        response_msg = await self.llm.run_agent_step(
+            messages=messages,
+            system_persona=self.system_prompt,
+            tools=available_tools
         )
         
-        return {
-            "next_step": decision.intent,
-            "current_thought": decision.thought,
-            "tool_call": decision.tool_calls[0].model_dump() if decision.tool_calls else None,
-            "assistant_hint": decision.assistant_hint,
-            "relevant_memories": memories,
-            "loop_step": 1 # Increment step count
-        }
+        return {"messages": [response_msg]}
 
     async def tool_node(self, state: AgentState):
-        tool = state["tool_call"]
+        """
+        Executes tools. Handles PARALLEL calls automatically.
+        """
+        last_message = state["messages"][-1]
+        tool_calls = last_message.tool_calls
         
-        # Log Intent
-        thought_msg = ChatMessage(role="assistant", content=f"Thought: {state['current_thought']}\nAction: Calling {tool['name']}...")
-        
-        # Execute
-        try:
-            res = await self.tools.call_tool(tool['name'], tool['args'])
-        except Exception as e:
-            res = f"Error: {e}"
-
-        # Log Observation
-        obs_msg = ChatMessage(role="user", content=f"🔎 OBSERVATION ({tool['name']}):\n{res}")
-        
-        return {"messages": [thought_msg, obs_msg]}
-
-    # --- UPDATED ROUTER LOGIC ---
-    def router(self, state: AgentState):
-        step_count = state.get("loop_step", 0)
-        
-        # 1. Safety Limit: Stop if we loop more than 5 times
-        if step_count > 5:
-            print("[Graph] ⚠️ Max recursion reached. Forcing exit.")
-            return "responder"
+        # Define a wrapper to run a single tool safely
+        async def run_single_tool(tc):
+            try:
+                logger.info(f"🛠️ Executing {tc['name']} args={tc['args']}")
+                output = await self.tools.call_tool(tc['name'], tc['args'])
+            except Exception as e:
+                output = f"Error executing {tc['name']}: {str(e)}"
             
-        # 2. Normal Logic
-        if state["next_step"] == "tool":
-            return "tools"
+            return ToolMessage(
+                content=output,
+                tool_call_id=tc['id'],
+                name=tc['name']
+            )
+
+        # Execute all tools in parallel
+        if tool_calls:
+            tasks = [run_single_tool(tc) for tc in tool_calls]
+            results = await asyncio.gather(*tasks)
+            return {"messages": results}
+        return {"messages": []}
+
+    def route_node(self, state: AgentState) -> Literal["tools", "finalize"]:
+        """
+        Determines if we need to loop back to tools or end.
+        """
+        last_message = state["messages"][-1]
         
-        return "responder"
+        if last_message.tool_calls:
+            return "tools"
+        return "finalize"
 
     def build(self):
         workflow = StateGraph(AgentState)
-        workflow.add_node("planner", self.planner_node)
+        
+        workflow.add_node("agent", self.agent_node)
         workflow.add_node("tools", self.tool_node)
-        workflow.add_node("responder", lambda x: {}) 
         
-        workflow.set_entry_point("planner")
+        # Entry point
+        workflow.add_edge(START, "agent")
         
+        # Conditional Edge: Agent -> (Tools OR End)
         workflow.add_conditional_edges(
-            "planner",
-            self.router, # Uses the new safe router
-            {"tools": "tools", "responder": "responder"}
+            "agent",
+            self.route_node,
+            {
+                "tools": "tools", 
+                "finalize": END
+            }
         )
         
-        workflow.add_edge("tools", "planner")
-        workflow.add_edge("responder", END)
+        # Loop: Tools -> Agent (To interpret results)
+        workflow.add_edge("tools", "agent")
         
         return workflow.compile()

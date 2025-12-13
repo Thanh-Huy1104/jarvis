@@ -1,64 +1,16 @@
-from __future__ import annotations
-
 import json
-import re
 import os
-from typing import Any, AsyncIterable, Dict, List, Optional
-
+import re
+import logging
+import ast
+from typing import List, Dict, Any
 import openai
-from pydantic import ValidationError
-
+from langchain_core.messages import (
+    AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+)
 from app.domain.ports import LLMPromptPort
-from app.core.config import settings
-from app.core.types import ChatMessage, ToolCall, ToolDecision, ToolResult
 
-# =============================================================================
-# CONSTANTS & PROMPTS
-# =============================================================================
-
-_DEFAULT_PERSONA = (
-    "You are a hyper-intelligent, human-like AI assistant. "
-    "Tone: Warm, intimate, highly competent, and natural (like Samantha from 'Her'). "
-    "Output: Speak in fluid, natural sentences only. No bullet points, lists, or headers. "
-    "Keep it concise (1-3 sentences) and conversational."
-)
-
-_THOUGHT_INSTRUCTION = (
-    "\n\nIMPORTANT: Before answering, you must briefly reason about the user's request inside <think>...</think> tags. "
-    "Use this space to analyze context, decide on tone, or plan your response. "
-    "The user will NOT hear what is inside these tags."
-)
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
-
-def _to_msg(m: Any) -> Dict[str, Any]:
-    """
-    Converts internal ChatMessage/Dict objects into OpenAI-compatible format.
-    """
-    if hasattr(m, "model_dump"):
-        data = m.model_dump()
-    elif isinstance(m, dict):
-        data = m
-    else:
-        data = {"role": "user", "content": str(m)}
-
-    role = data.get("role")
-    content = data.get("content")
-
-    # Mapping 'tool' to 'user' is handled in Orchestrator now, 
-    # but we keep a failsafe here just in case.
-    if role == "tool":
-        role = "user"
-        content = f"Tool Result: {content}"
-    
-    return {"role": role, "content": content}
-
-
-# =============================================================================
-# ADAPTER IMPLEMENTATION
-# =============================================================================
+logger = logging.getLogger(__name__)
 
 class VllmAdapter(LLMPromptPort):
     def __init__(self) -> None:
@@ -66,119 +18,157 @@ class VllmAdapter(LLMPromptPort):
             base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
             api_key="EMPTY",
         )
-        self._model = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct-AWQ")
+        self._model = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-14B-AWQ")
 
-    async def decide_next_step(
-        self,
-        *,
-        user_text: str,
-        history: List[ChatMessage],
-        tool_schemas: List[Dict[str, Any]],
-        memories: List[str],
-    ) -> ToolDecision:
-        print(f"[VllmAdapter] Planning next step for: '{user_text}'")
-        
-        # 1. Format Memories for Context
-        memory_block = ""
-        if memories:
-            memory_block = "\nRELEVANT MEMORIES:\n" + "\n".join(f"- {m}" for m in memories) + "\n"
+    def _convert_mcp_to_openai(self, mcp_tools: List[Dict]) -> List[Dict]:
+        """Converts MCP tool definitions to OpenAI 'tools' format."""
+        openai_tools = []
+        for t in mcp_tools:
+            openai_tools.append({
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t.get("description", ""),
+                    "parameters": t.get("args_schema", {"type": "object", "properties": {}})
+                }
+            })
+        return openai_tools
 
-        # 2. Stricter Planner Prompt
-        planner_system = (
-            "You are the orchestration brain of Jarvis. Your job is to determine the NEXT SINGLE STEP.\n"
-            "Analyze the conversation history. Look at the latest user request AND any recent tool outputs.\n"
-            "You MUST output ONLY valid JSON. No Markdown. No extra text.\n\n"
-            "Schema:\n"
-            "{\n"
-            '  "thought": "Brief reasoning: What do I know? What do I need next?",\n'
-            '  "intent": "tool" | "chat",\n'
-            '  "tool_calls": [{"name": string, "args": object}],\n'
-            '  "assistant_hint": string | null\n'
-            "}\n\n"
-            "CRITICAL RULES:\n"
-            "1. **INTENT**: If you want to use a function, `intent` MUST be the string 'tool'. Never use the tool name as the intent.\n"
-            "2. **execute_python**: STDOUT ONLY. You MUST `print(...)` results.\n"
-            "3. **Termination**: If you have the final answer, use `intent: chat`.\n"
-        )
-        
-        tools_str = json.dumps(tool_schemas, ensure_ascii=False)
-        messages = [{"role": "system", "content": planner_system + memory_block + "\nAvailable Tools:\n" + tools_str}]
-        
-        for m in history[-10:]:
-            messages.append(_to_msg(m))
-            
-        try:
-            out = await self._client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                temperature=0.1,
-                max_tokens=500,
-            )
-            raw = out.choices[0].message.content.strip()
-            print(f"[VllmAdapter Planner]: {raw}")
-
-            # 3. JSON SANITIZER (Fixes Chinese punctuation crashes)
-            raw = raw.replace("，", ",").replace("“", '"').replace("”", '"').replace("：", ":")
-
-            # 4. JSON Extraction
-            json_match = re.search(r"(\{.*\})", raw, re.DOTALL)
-            if json_match:
-                clean_json = json_match.group(1)
-                data = json.loads(clean_json)
-
-                # --- AUTO-CORRECT INTENT ---
-                # If LLM put a tool name in intent, or just messed up,
-                # but specifically requested tool_calls, we force 'tool'.
-                intent = data.get("intent", "").lower()
-                tool_calls = data.get("tool_calls", [])
-
-                if intent != "chat" and intent != "tool":
-                    if tool_calls:
-                        print(f"[VllmAdapter] Auto-correcting intent '{intent}' -> 'tool'")
-                        data["intent"] = "tool"
-                    else:
-                        data["intent"] = "chat"
-                # --------------------------------
-
-                return ToolDecision(**data)
+    def _convert_langchain_to_openai_msgs(self, messages: List[BaseMessage]) -> List[Dict]:
+        """Maps LangChain message objects to OpenAI dicts."""
+        openai_msgs = []
+        for m in messages:
+            if isinstance(m, HumanMessage):
+                openai_msgs.append({"role": "user", "content": m.content})
+            elif isinstance(m, AIMessage):
+                msg = {"role": "assistant", "content": m.content}
+                if m.tool_calls:
+                    msg["tool_calls"] = [
+                        {
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc["args"])
+                            }
+                        }
+                        for tc in m.tool_calls
+                    ]
+                openai_msgs.append(msg)
+            elif isinstance(m, ToolMessage):
+                openai_msgs.append({
+                    "role": "tool",
+                    "tool_call_id": m.tool_call_id,
+                    "content": m.content
+                })
+            elif isinstance(m, SystemMessage):
+                openai_msgs.append({"role": "system", "content": m.content})
             else:
-                print("[VllmAdapter Warning] No JSON found. Defaulting to Chat.")
-                return ToolDecision(intent="chat", tool_calls=[], assistant_hint=None)
+                openai_msgs.append({"role": "user", "content": str(m.content)})
+        return openai_msgs
 
-        except (json.JSONDecodeError, ValidationError) as e:
-            print(f"[VllmAdapter Error] Parsing Failed: {e}")
-            return ToolDecision(intent="chat", tool_calls=[], assistant_hint=None)
-        except Exception as e:
-            print(f"[VllmAdapter Error] LLM Call Failed: {e}")
-            return ToolDecision(intent="chat", tool_calls=[], assistant_hint=None)
+    def _extract_tools_fallback(self, content: str) -> List[Dict]:
+        """
+        Fallback: If vLLM fails to parse <tool_call>, we do it manually via Regex.
+        Crucial for Qwen 2.5 mixed outputs.
+        """
+        tools_found = []
+        # Regex to find <tool_call>{JSON}</tool_call> blocks
+        # We use dotall to capture newlines inside the JSON
+        pattern = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
         
+        matches = pattern.findall(content)
+        for match in matches:
+            # Sometimes the model puts markdown json ``` inside the tag
+            clean_str = match.replace("```json", "").replace("```", "").strip()
+            
+            data = None
+            # Attempt 1: Standard JSON
+            try:
+                data = json.loads(clean_str)
+            except json.JSONDecodeError:
+                # Attempt 2: Python-style dictionary (common in local LLMs using single quotes)
+                try:
+                    data = ast.literal_eval(clean_str)
+                except Exception:
+                    pass
+            
+            if isinstance(data, dict):
+                try:
+                    tools_found.append({
+                        "name": data["name"],
+                        "args": data["arguments"],
+                        "id": f"call_fallback_{len(tools_found)}"
+                    })
+                    logger.info(f"🔧 Manual Fallback Triggered: Parsed {data['name']}")
+                except Exception as e:
+                    logger.warning(f"Manual tool parse missing keys: {e}")
+            else:
+                logger.warning(f"Failed to parse manual tool call data: {clean_str[:50]}...")
+        
+        return tools_found
+
+    async def run_agent_step(
+        self,
+        messages: List[BaseMessage],
+        system_persona: str,
+        tools: List[Dict[str, Any]] = None
+    ) -> AIMessage:
+        """
+        Runs a single step of the agent using native tool calling + manual fallback.
+        """
+        
+        openai_tools = self._convert_mcp_to_openai(tools) if tools else None
+        formatted_msgs = [{"role": "system", "content": system_persona}]
+        formatted_msgs.extend(self._convert_langchain_to_openai_msgs(messages))
+
+        try:
+            response = await self._client.chat.completions.create(
+                model=self._model,
+                messages=formatted_msgs,
+                tools=openai_tools if openai_tools else openai.NOT_GIVEN,
+                tool_choice="auto" if openai_tools else openai.NOT_GIVEN,
+                temperature=0.1, 
+            )
+            
+            choice = response.choices[0].message
+            content = choice.content or ""
+            lc_tool_calls = []
+
+            # 1. Try Native Parsing (vLLM)
+            if choice.tool_calls:
+                for tc in choice.tool_calls:
+                    lc_tool_calls.append({
+                        "name": tc.function.name,
+                        "args": json.loads(tc.function.arguments),
+                        "id": tc.id or f"call_{tc.function.name}"
+                    })
+            
+            # 2. Try Manual Fallback (If native failed but tags exist)
+            if not lc_tool_calls and ("<tool_call>" in content):
+                lc_tool_calls = self._extract_tools_fallback(content)
+                # Clean the content so the user doesn't see raw XML tags
+                content = re.sub(r"<tool_call>.*?</tool_call>", "", content, flags=re.DOTALL).strip()
+
+            return AIMessage(content=content, tool_calls=lc_tool_calls)
+
+        except Exception as e:
+            logger.error(f"LLM Error: {e}")
+            return AIMessage(content=f"Error generating response: {str(e)}")
+
     async def stream_response(
         self,
         *,
-        user_text: str,
-        history: List[ChatMessage],
-        system_persona: str = _DEFAULT_PERSONA,
-    ) -> AsyncIterable[str]:
-        """
-        The 'Voice' of the agent. This runs when intent="chat".
-        Note: The 'system_persona' passed here now contains the [CONTEXT] hints from the planner.
-        """
+        history: List[BaseMessage],
+        system_persona: str,
+    ) -> Any:
+        messages = [{"role": "system", "content": system_persona}]
+        messages.extend(self._convert_langchain_to_openai_msgs(history))
         
-        # 1. Enhanced Persona with Thought Instructions
-        enhanced_persona = system_persona + _THOUGHT_INSTRUCTION
-
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": enhanced_persona}]
-        
-        # 2. Convert history
-        # We assume history is already curated by the Orchestrator
-        for m in history:
-            messages.append(_to_msg(m))
-            
-        # 3. Stream Response
         stream = await self._client.chat.completions.create(
             model=self._model,
             messages=messages,
-            temperature=settings.llama_temperature_chat,
+            temperature=0.7,
             stream=True,
         )
 

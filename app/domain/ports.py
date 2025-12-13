@@ -1,34 +1,56 @@
-from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterable, Dict, List, Optional, Tuple
-
-from app.core.types import ChatMessage, ToolDecision
+from typing import List, Dict, Any, AsyncIterable, Optional
+from langchain_core.messages import BaseMessage, AIMessage
+from app.core.types import ChatMessage
 
 class SessionStorePort(ABC):
     @abstractmethod
     def get_recent(self, session_id: str, limit: int) -> List[ChatMessage]: ...
-
+    
     @abstractmethod
     def append(self, session_id: str, msg: ChatMessage) -> None: ...
 
-
 class STTPort(ABC):
     @abstractmethod
-    def transcribe(self, audio_bytes: bytes, *, filename: str | None = None) -> str: ...
+    def transcribe(self, audio_bytes: bytes, filename: str | None = None) -> str: ...
 
+class TTSPort(ABC):
+    @abstractmethod
+    def speak_pcm_f32(self, text: str) -> tuple[bytes, int, int]: ...
+
+class ToolsPort(ABC):
+    @abstractmethod
+    async def list_tools(self) -> List[Dict[str, Any]]: ...
+    
+    @abstractmethod
+    async def call_tool(self, name: str, args: dict) -> str: ...
+    
+    async def connect(self) -> None:
+        """Optional: Connect to tool provider (e.g., MCP server)"""
+        pass
+    
+    async def cleanup(self) -> None:
+        """Optional: Cleanup tool provider resources"""
+        pass
+
+class MemoryPort(ABC):
+    @abstractmethod
+    def add(self, text: str, user_id: str) -> None: ...
+    
+    @abstractmethod
+    def search(self, query: str, user_id: str, limit: int = 5) -> List[str]: ...
 
 class LLMPromptPort(ABC):
     @abstractmethod
-    async def decide_next_step(
-        self,
-        *,
-        user_text: str,
-        history: List[Any], # Accepts List[ChatMessage] or List[Dict]
-        tool_schemas: List[Dict[str, Any]],
-        memories: List[str], # <--- NEW: Required for Memory Injection
-    ) -> ToolDecision:
+    async def run_agent_step(
+        self, 
+        messages: List[BaseMessage], 
+        system_persona: str, 
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> AIMessage:
         """
-        Analyzes context and decides the immediate next step (Tool or Chat).
+        Executes a single step of the agent. 
+        Returns a LangChain AIMessage (which may contain text or tool_calls).
         """
         ...
 
@@ -36,42 +58,10 @@ class LLMPromptPort(ABC):
     async def stream_response(
         self,
         *,
-        user_text: str,
-        history: List[Any],
+        history: List[BaseMessage],
         system_persona: str,
-    ) -> AsyncIterable[str]: 
+    ) -> AsyncIterable[str]:
         """
-        Streams the final verbal response. Context is now embedded in system_persona.
+        Used for streaming the final text response if needed.
         """
-        ...
-
-
-class TTSPort(ABC):
-    @abstractmethod
-    def speak_wav(self, text: str) -> bytes: ...
-
-    @abstractmethod
-    def speak_pcm_f32(self, text: str) -> Tuple[bytes, int, int]:
-        """Returns (pcm_f32le_bytes, sample_rate, channels)."""
-        ...
-
-
-class ToolsPort(ABC):
-    @abstractmethod
-    async def list_tools(self) -> List[Dict[str, Any]]: ...
-
-    @abstractmethod
-    async def call_tool(self, name: str, args: dict) -> str:
-        ...
-
-
-class MemoryPort(ABC):
-    @abstractmethod
-    def add(self, text: str, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> None: 
-        """Add a memory/interaction to the long-term store."""
-        ...
-
-    @abstractmethod
-    def search(self, query: str, user_id: str, limit: int = 5) -> List[Dict[str, Any]]: 
-        """Search for relevant memories."""
         ...

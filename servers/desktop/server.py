@@ -4,35 +4,45 @@
 #   "fastmcp",
 #   "docker",
 #   "psutil", 
+#   "requests",
+#   "duckduckgo-search",
+#   "beautifulsoup4",
 # ]
 # ///
 
 """
-Jarvis Headless MCP Server
---------------------------
-Provides system monitoring, sandboxed code execution, and productivity tools
-for a headless Linux/Proxmox environment.
+Jarvis Headless MCP Server (Ultimate Edition)
+---------------------------------------------
+A complete toolset for a headless AI Assistant.
+Capabilities:
+1. System & Docker Management (Ops)
+2. Sandboxed Python Execution (Engineering)
+3. File System Manipulation (Coding)
+4. Web Research (Browsing)
+5. Memory & Task Management (Productivity)
 """
 
 import ast
 import datetime
 import json
-import socket
-import subprocess
-import tempfile
 import os
-import sys  # Required for safe logging (stderr)
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+import re
 import shutil
-import re 
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, List, Optional
 
 import docker
 import psutil
+import requests
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 from fastmcp import FastMCP
 
 # =============================================================================
-# CONFIGURATION & CONSTANTS
+# 🔧 CONFIGURATION & CONSTANTS
 # =============================================================================
 
 SERVER_NAME = "Jarvis Headless"
@@ -40,16 +50,17 @@ DATA_DIR = Path.home() / "jarvis_data"
 WORKSPACE_DIR = DATA_DIR / "workspace"
 NOTES_FILE = DATA_DIR / "notes.md"
 TODO_FILE = DATA_DIR / "todos.json"
-STATE_FILE = DATA_DIR / "state.json" 
+STATE_FILE = DATA_DIR / "state.json"
 
-# Ensure directories exist
+# Ensure core directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Initialize MCP Server
 mcp = FastMCP(SERVER_NAME)
 
 # =============================================================================
-# HELPER FUNCTIONS
+# 🛠️ HELPER FUNCTIONS
 # =============================================================================
 
 def _load_json(filepath: Path, default: Any = None) -> Any:
@@ -74,71 +85,224 @@ def _get_active_project() -> Optional[Path]:
             return path
     return None
 
-def _run_subprocess(cmd: List[str], timeout: int = 5) -> str:
+def _is_safe_path(path: Path) -> bool:
+    """Ensures file operations stay within the WORKSPACE_DIR."""
     try:
-        use_shell = isinstance(cmd, str)
-        result = subprocess.run(
-            cmd, 
-            shell=use_shell,
-            capture_output=True, 
-            text=True, 
-            timeout=timeout
-        )
-        if result.returncode != 0:
-            return f"Command Failed (Code {result.returncode}):\n{result.stderr.strip()}"
-        return f"{result.stdout.strip()}"
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after {timeout}s."
-    except Exception as e:
-        return f"Execution Error: {str(e)}"
+        # Resolve to absolute path and check prefix
+        full_path = path.resolve()
+        return str(full_path).startswith(str(WORKSPACE_DIR.resolve()))
+    except Exception:
+        return False
 
 # =============================================================================
-# 🧪 SANDBOXED COMPUTE & ENGINEERING
+# 🌍 WEB & RESEARCH TOOLS ("THE EYES")
+# =============================================================================
+
+@mcp.tool()
+def search_web(query: str, max_results: int = 5) -> str:
+    """Searches the internet for current information using DuckDuckGo."""
+    try:
+        # DDGS context manager is preferred
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        return json.dumps(results, indent=2)
+    except Exception as e:
+        return f"Error performing web search: {e}"
+
+@mcp.tool()
+def scrape_website(url: str) -> str:
+    """Scrapes the text content of a specific webpage for reading documentation."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=10)
+        res.raise_for_status()
+        
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # Clean up script/style tags
+        for script in soup(["script", "style", "nav", "footer"]):
+            script.decompose()
+            
+        text = soup.get_text()
+        
+        # Clean up whitespace
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        # Truncate if too huge
+        return text[:15000] + "\n...(truncated)" if len(text) > 15000 else text
+    except Exception as e:
+        return f"Error scraping website: {e}"
+
+# =============================================================================
+# 📂 FILE SYSTEM TOOLS ("THE HANDS")
+# =============================================================================
+
+@mcp.tool()
+def list_directory(path: str = ".") -> str:
+    """Lists files and directories in the workspace."""
+    target = (WORKSPACE_DIR / path).resolve()
+    if not _is_safe_path(target):
+        return "Error: Access Denied. You can only access the workspace."
+    
+    if not target.exists():
+        return "Error: Path does not exist."
+
+    try:
+        output = []
+        # Simple ls -la style output
+        for item in target.iterdir():
+            type_char = "d" if item.is_dir() else "-"
+            output.append(f"{type_char} {item.name}")
+        return "\n".join(sorted(output))
+    except Exception as e:
+        return f"Error listing directory: {e}"
+
+@mcp.tool()
+def read_file(filepath: str) -> str:
+    """Reads the content of a file from the workspace."""
+    target = (WORKSPACE_DIR / filepath).resolve()
+    if not _is_safe_path(target):
+        return "Error: Access Denied."
+    if not target.exists():
+        return "Error: File not found."
+    if not target.is_file():
+        return "Error: Path is not a file."
+        
+    try:
+        return target.read_text(encoding='utf-8')
+    except Exception as e:
+        return f"Error reading file: {e}"
+
+@mcp.tool()
+def write_file(filepath: str, content: str) -> str:
+    """Writes (or overwrites) a file in the workspace."""
+    target = (WORKSPACE_DIR / filepath).resolve()
+    if not _is_safe_path(target):
+        return "Error: Access Denied."
+    
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding='utf-8')
+        return f"Successfully wrote {len(content)} bytes to {filepath}"
+    except Exception as e:
+        return f"Error writing file: {e}"
+
+# =============================================================================
+# 🧠 MEMORY & PRODUCTIVITY ("THE BRAIN")
+# =============================================================================
+
+@mcp.tool()
+def add_note(note: str) -> str:
+    """Adds a timestamped note to the personal journal."""
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    try:
+        with open(NOTES_FILE, "a", encoding="utf-8") as f:
+            f.write(f"\n## {now}\n{note}\n")
+        return "Note added successfully."
+    except Exception as e:
+        return f"Error adding note: {e}"
+
+@mcp.tool()
+def search_notes(keyword: str) -> str:
+    """Searches personal notes for a specific keyword."""
+    if not NOTES_FILE.exists():
+        return "No notes file found."
+    
+    try:
+        matches = []
+        content = NOTES_FILE.read_text(encoding='utf-8')
+        # Split by header entries (## YYYY-MM-DD)
+        entries = content.split("##")
+        
+        for entry in entries:
+            if not entry.strip(): continue
+            if keyword.lower() in entry.lower():
+                matches.append(f"##{entry.strip()}")
+        
+        if not matches:
+            return f"No notes found containing '{keyword}'."
+        return "\n\n".join(matches)
+    except Exception as e:
+        return f"Error searching notes: {e}"
+
+@mcp.tool()
+def manage_todo(action: str, task: str = "", task_id: int = -1) -> str:
+    """
+    Manages a simple TODO list.
+    Actions: 'list', 'add', 'complete', 'remove'.
+    """
+    todos = _load_json(TODO_FILE, [])
+    
+    if action == "list":
+        active = [t for t in todos if not t.get('completed')]
+        if not active: return "No active tasks."
+        return json.dumps(active, indent=2)
+    
+    elif action == "add":
+        if not task: return "Error: Task description required for 'add'."
+        new_id = max([t.get('id', 0) for t in todos], default=0) + 1
+        todos.append({
+            "id": new_id, 
+            "task": task, 
+            "completed": False, 
+            "created": str(datetime.datetime.now())
+        })
+        _save_json(TODO_FILE, todos)
+        return f"Task added: [ID {new_id}] {task}"
+        
+    elif action == "complete":
+        for t in todos:
+            if t.get('id') == task_id:
+                t['completed'] = True
+                _save_json(TODO_FILE, todos)
+                return f"Task {task_id} marked as complete."
+        return f"Error: Task ID {task_id} not found."
+    
+    return "Invalid action. Use: list, add, complete."
+
+# =============================================================================
+# 🧪 SANDBOXED ENGINEERING ("THE LAB")
 # =============================================================================
 
 @mcp.tool()
 def set_active_project(path: str) -> str:
-    """Sets the active coding project directory."""
+    """Sets the active project directory for code execution context."""
     p = Path(path).expanduser().resolve()
     if not p.exists() or not p.is_dir():
-        return f"Error: Path not found or not a directory: {path}"
+        return f"Error: Path not found: {path}"
     
     state = _load_json(STATE_FILE, default={})
     state["active_project"] = str(p)
     _save_json(STATE_FILE, state)
-    
     return f"Active project set to: {p}"
 
 @mcp.tool()
 def execute_python(code: str, dependencies: List[str] = []) -> str:
     """
-    Executes Python code in a SECURE Docker sandbox.
-    FEATURES: Auto-prints the last expression, Secure Sandbox, Auto-installs dependencies.
+    Executes Python code in a secure Docker sandbox.
+    Automatically installs dependencies and prints the last expression.
     """
-    # CRITICAL: Print to stderr to avoid breaking JSON-RPC
     print(f"\n--- [DEBUG] Incoming Code ---\n{code}\n-----------------------------", file=sys.stderr)
 
     active_project = _get_active_project()
     client = docker.from_env()
 
-    # 1. AST AUTO-PRINT MAGIC
+    # 1. AST Transformation (Auto-print last expression)
     code = code.strip()
     try:
         tree = ast.parse(code)
-        last_node = tree.body[-1] if tree.body else None
-        
-        # Check if it's an expression
-        if last_node and isinstance(last_node, ast.Expr):
-            # CHECK: Is it already a print() call?
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
+            last_node = tree.body[-1]
+            # check if not already a print call
             is_print = (
                 isinstance(last_node.value, ast.Call) and
                 isinstance(last_node.value.func, ast.Name) and
                 last_node.value.func.id == 'print'
             )
-            
-            # Only wrap if it's NOT already a print call
             if not is_print:
-                print("[DEBUG] Wrapping last expression in print().", file=sys.stderr)
+                print("[DEBUG] Wrapping last expression in print()", file=sys.stderr)
                 print_node = ast.Call(
                     func=ast.Name(id='print', ctx=ast.Load()),
                     args=[last_node.value],
@@ -146,56 +310,50 @@ def execute_python(code: str, dependencies: List[str] = []) -> str:
                 )
                 tree.body[-1] = ast.Expr(value=print_node)
                 code = ast.unparse(tree)
-            else:
-                print("[DEBUG] Last line is already print(). No change.", file=sys.stderr)
     except Exception as e:
         print(f"[DEBUG] AST Transformation Failed: {e}", file=sys.stderr)
         
-    # 2. Dependency Sanitizer
-    clean_deps = set()
-    for dep in dependencies:
-        root = dep.split('.')[0]
-        if root.lower() not in ['os', 'sys', 're', 'math', 'json', 'random', 'time']:
-            clean_deps.add(root)
+    # 2. Prepare Script
+    clean_deps = {d.split('.')[0] for d in dependencies if d.lower() not in 
+                 ['os', 'sys', 're', 'math', 'json', 'random', 'time', 'datetime']}
             
     header = "# /// script\n# dependencies = [\n"
     for dep in clean_deps:
         header += f'#   "{dep}",\n'
     header += "# ]\n# ///\n\n"
 
-    # 3. Setup Code & F-String Fixer
-    setup_code = ""
-    if active_project:
-        setup_code = "import sys\nsys.path.append('/mnt/project')\n\n"
-        
+    setup_code = "import sys\nsys.path.append('/mnt/project')\n\n" if active_project else ""
+    
+    # Fix f-string format edge cases
     fstring_pattern = re.compile(r"f(['\"])(.*?\n.*?)\1", re.DOTALL)
     code = fstring_pattern.sub(r"f'''\2'''", code)
     
     full_script = header + setup_code + code
 
-    # 4. Create Temp File
+    # 3. Create Temp File
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as tmp:
         tmp.write(full_script)
         tmp_path_host = tmp.name
 
     container = None
     try:
-        # 5. Volume Mounts - DUAL MOUNT FIX for path confusion
+        # 4. Volume Config
         volumes = {
             tmp_path_host: {'bind': '/app/script.py', 'mode': 'ro'},
             str(WORKSPACE_DIR): {'bind': '/app/workspace', 'mode': 'rw'},
-            str(WORKSPACE_DIR): {'bind': '/workspace', 'mode': 'rw'} # Fallback for bad LLM paths
+            str(WORKSPACE_DIR): {'bind': '/workspace', 'mode': 'rw'}
         }
         if active_project:
             volumes[str(active_project)] = {'bind': '/mnt/project', 'mode': 'ro'}
 
+        # 5. Run Container
         container = client.containers.run(
             image="jarvis-sandbox",
             command=["uv", "run", "/app/script.py"],
             volumes=volumes,
             network_mode="host",
             mem_limit="512m",
-            nano_cpus=1000000000,
+            nano_cpus=1000000000, # 1 CPU
             detach=True,
             remove=False
         )
@@ -211,20 +369,12 @@ def execute_python(code: str, dependencies: List[str] = []) -> str:
         stderr = container.logs(stdout=False, stderr=True).decode('utf-8', errors='replace').strip()
 
         if exit_code != 0:
-            return (
-                f"⚠️ CRITICAL EXECUTION FAILURE (Exit Code {exit_code}) ⚠️\n"
-                f"{stderr}\n{stdout}\n"
-            )
+            return f"⚠️ EXECUTION FAILURE (Exit Code {exit_code}):\n{stderr}\n{stdout}"
 
-        if stdout:
-            return f"Output:\n{stdout}"
-        
         if not stdout:
-             msg = "Executed successfully, but STDOUT is empty."
-             if stderr:
-                 msg += f"\n(System Logs: {stderr})"
-             msg += "\n\nCRITICAL: The code returned no result. Did you forget to `print()` the final variable?"
-             return msg
+            return f"Executed successfully (No Output).\nLogs: {stderr}" if stderr else "Executed successfully."
+
+        return f"{stdout}"
 
     except Exception as e:
         return f"System Error: {str(e)}"
@@ -236,55 +386,75 @@ def execute_python(code: str, dependencies: List[str] = []) -> str:
         Path(tmp_path_host).unlink(missing_ok=True)
 
 # =============================================================================
-# SYSTEM OPERATIONS
+# 🖥️ SYSTEM OPS ("THE INFRASTRUCTURE")
 # =============================================================================
 
 @mcp.tool()
 def get_system_health() -> str:
-    """Returns detailed CPU, RAM, and Disk stats in GB."""
-    def _bytes_to_gb(bytes_val: int) -> float:
-        return round(bytes_val / (1024 ** 3), 2)
+    """Returns CPU, RAM, and Disk usage stats."""
+    def _bytes_to_gb(b): return round(b / (1024**3), 2)
     
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage('/')
     
     return (
-        f"CPU Load: {psutil.cpu_percent()}%\n"
-        f"RAM: {mem.percent}% Used | Total: {_bytes_to_gb(mem.total)}GB | Available: {_bytes_to_gb(mem.available)}GB\n"
-        f"Disk: {disk.percent}% Used | Free: {_bytes_to_gb(disk.free)}GB"
+        f"CPU: {psutil.cpu_percent()}%\n"
+        f"RAM: {mem.percent}% ({_bytes_to_gb(mem.used)}GB / {_bytes_to_gb(mem.total)}GB)\n"
+        f"Disk: {disk.percent}% ({_bytes_to_gb(disk.used)}GB / {_bytes_to_gb(disk.total)}GB)"
     )
 
 @mcp.tool()
 def run_shell_command(command: str) -> str:
-    """Executes safe shell commands inside the WORKSPACE directory."""
-    ALLOWED = ["whoami", "date", "ls", "ip a", "uptime", "free", "df", "docker ps", "mkdir", "rm", "cat", "echo"]
+    """
+    Executes safe shell commands in the workspace.
+    Allowed: ls, cat, echo, grep, find, date, whoami, uptime, df, free, docker
+    """
+    ALLOWED_PREFIXES = [
+        "ls", "cat", "echo", "grep", "find", "date", "whoami", 
+        "uptime", "df", "free", "docker ps", "mkdir", "rm", "touch"
+    ]
     
-    # 1. Security Check
-    if not any(command.startswith(prefix) for prefix in ALLOWED):
-        return f"Denied: Command '{command}' not in allowlist."
-    
-    # 2. Execution in Workspace Dir
+    if not any(command.strip().startswith(p) for p in ALLOWED_PREFIXES):
+        return f"Denied: Command '{command}' not in whitelist."
+
     try:
-        # We explicitly set cwd=WORKSPACE_DIR so 'ls' sees the right files
-        result = subprocess.run(
+        res = subprocess.run(
             command, 
-            shell=True,
+            shell=True, 
             cwd=WORKSPACE_DIR,
             capture_output=True, 
             text=True, 
-            timeout=5
+            timeout=10
         )
-        if result.returncode != 0:
-            return f"Command Failed (Code {result.returncode}):\n{result.stderr.strip()}"
-        
-        output = result.stdout.strip()
-        if not output:
-            return "Command executed successfully (no output)."
-        return output
-    except subprocess.TimeoutExpired:
-        return "Error: Command timed out after 5s."
+        if res.returncode != 0:
+            return f"Error ({res.returncode}): {res.stderr.strip()}"
+        return res.stdout.strip() or "Success (No output)"
     except Exception as e:
-        return f"Execution Error: {str(e)}"
+        return f"Execution Error: {e}"
+
+@mcp.tool()
+def manage_docker(action: str, container_name: str) -> str:
+    """
+    Manages Docker containers. 
+    Action: 'start', 'stop', 'restart', 'logs'.
+    """
+    client = docker.from_env()
+    try:
+        container = client.containers.get(container_name)
+        if action == "start":
+            container.start()
+        elif action == "stop":
+            container.stop()
+        elif action == "restart":
+            container.restart()
+        elif action == "logs":
+            return container.logs(tail=50).decode('utf-8')
+        else:
+            return "Invalid action. Use start, stop, restart, or logs."
+        
+        return f"Successfully performed '{action}' on {container_name}"
+    except Exception as e:
+        return f"Docker Error: {e}"
 
 if __name__ == "__main__":
     mcp.run()

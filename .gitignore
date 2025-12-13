@@ -27,6 +27,7 @@ share/
 .installed.cfg
 *.manifest
 *.spec
+certs/
 
 # MyPy
 .mypy_cache/

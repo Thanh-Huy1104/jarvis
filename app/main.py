@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Observability Imports
 import phoenix as px
-from openinference.instrumentation.langchain import LangChainInstrumentor
+from phoenix.otel import register
 
 from app.api.routes import router
 from app.core.orchestrator import Orchestrator
@@ -18,10 +18,17 @@ async def lifespan(app: FastAPI):
     # This launches the UI at http://localhost:6006
     try:
         session = px.launch_app()
-        print(f"🔭 Phoenix UI active at: {session.url}")
-        LangChainInstrumentor().instrument() # Hooks into LangGraph automatically
+        session_url = getattr(session, 'url', 'http://localhost:6006')
+        print(f"🔭 Phoenix UI active at: {session_url}")
+        
+        # Programmatic OpenTelemetry setup
+        tracer_provider = register(
+            project_name="jarvis-agent",
+            auto_instrument=True
+        )
+        
     except Exception as e:
-        print(f"⚠️ Failed to launch Phoenix: {e}")
+        print(f"⚠️ Failed to launch Phoenix or OpenTelemetry: {e}")
 
     # 2. Setup Stores
     app.state.session_store = InMemorySessionStore()

@@ -2,7 +2,6 @@ from __future__ import annotations
 import os
 import tempfile
 
-import torch
 from faster_whisper import WhisperModel
 
 from app.domain.ports import STTPort
@@ -11,14 +10,12 @@ from app.core.config import settings
 
 class FasterWhisperAdapter(STTPort):
     def __init__(self):
-        # device = "cuda" if torch.cuda.is_available() else "cpu"
-        # compute_type = "float16" if device == "cuda" else "int8"
         self._model = WhisperModel(settings.whisper_model, device="cpu", compute_type="int8")
 
     def transcribe(self, audio_bytes: bytes, *, filename: str | None = None) -> str:
         suffix = ""
         if filename and "." in filename:
-            suffix = os.path.splitext(filename)[1]  # keep .wav/.mp3/.m4a/.webm etc.
+            suffix = os.path.splitext(filename)[1]
 
         with tempfile.NamedTemporaryFile(delete=True, suffix=suffix) as f:
             f.write(audio_bytes)

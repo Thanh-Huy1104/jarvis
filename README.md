@@ -30,8 +30,15 @@ The project is structured as follows:
 - `servers/`: Different ways to run the application.
   - `desktop/`: A desktop server for running the application.
 
-## Getting Started
+## Changelog
 
+### v1.1.0 (2025-12-12)
+
+- **Bug Fix:** Resolved an issue where the response from the `VllmAdapter` was not being sent back to the user. The orchestrator now correctly handles the graph state, ensuring that the `assistant_hint` is preserved.
+- **SYSTEM_PERSONA:** The `SYSTEM_PERSONA` has been updated to be more concise and to the point, resulting in more focused and relevant responses from the AI.
+
+## Getting Started
+  
 ### Prerequisites
 
 - Python 3.10+
@@ -55,8 +62,13 @@ To start the desktop server:
 
 ```bash
 python 
-uvicorn app.main:app --reload --port 8080
-```
+uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --ssl-keyfile certs/192.168.5.215-key.pem \
+  --ssl-certfile certs/192.168.5.215.pem \
+  --reload
+ ```
 
 ## License
 

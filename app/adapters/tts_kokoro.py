@@ -17,7 +17,6 @@ def _remove_dc(x: np.ndarray) -> np.ndarray:
     return (x - float(np.mean(x))).astype(np.float32, copy=False)
 
 def _fade_in_out(x: np.ndarray, sr: int, fade_ms: float = 4.0) -> np.ndarray:
-    # Gentle ramp to prevent clicks at start/end of buffer
     x = np.asarray(x, dtype=np.float32).reshape(-1).copy()
     n = x.shape[0]
     if n == 0: return x
@@ -59,13 +58,10 @@ class KokoroAdapter(TTSPort):
             )
 
         sr = int(sample_rate)
-        # Ensure flat float32 array
         arr = np.asarray(samples, dtype=np.float32).reshape(-1)
 
-        # Apply Audio Cleaning
         arr = _remove_dc(arr)
         arr = _fade_in_out(arr, sr, fade_ms=5.0)
 
-        # Convert to raw bytes
         pcm_bytes = arr.tobytes()
         return pcm_bytes, sr, 1
