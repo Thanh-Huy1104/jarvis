@@ -61,7 +61,7 @@ class JarvisGraph:
         
         async def run_single_tool(tc):
             try:
-                logger.info(f"🛠️ Executing {tc['name']} args={tc['args']}")
+                logger.info(f"Executing tool: {tc['name']} with args={tc['args']}")
                 output = await self.tools.call_tool(tc['name'], tc['args'])
             except Exception as e:
                 output = f"Error executing {tc['name']}: {str(e)}"

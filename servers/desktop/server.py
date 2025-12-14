@@ -61,7 +61,7 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 mcp = FastMCP(SERVER_NAME)
 
 # =============================================================================
-# 🛠️ HELPER FUNCTIONS
+# HELPER FUNCTIONS
 # =============================================================================
 
 def _load_json(filepath: Path, default: Any = None) -> Any:
