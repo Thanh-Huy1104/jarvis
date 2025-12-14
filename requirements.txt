@@ -2,6 +2,8 @@
 langgraph
 langgraph-checkpoint-sqlite
 langchain-core
+langchain-openai
+langchain-community
 aiosqlite
 
 # --- Web Server & API ---

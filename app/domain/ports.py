@@ -54,14 +54,14 @@ class LLMPromptPort(ABC):
         """
         ...
 
-    @abstractmethod
-    async def stream_response(
-        self,
-        *,
-        history: List[BaseMessage],
-        system_persona: str,
-    ) -> AsyncIterable[str]:
-        """
-        Used for streaming the final text response if needed.
-        """
-        ...
+    # @abstractmethod
+    # async def stream_response(
+    #     self,
+    #     *,
+    #     history: List[BaseMessage],
+    #     system_persona: str,
+    # ) -> AsyncIterable[str]:
+    #     """
+    #     Used for streaming the final text response if needed.
+    #     """
+    #     ...

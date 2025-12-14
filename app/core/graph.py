@@ -1,9 +1,10 @@
 import asyncio
 import logging
 from typing import Literal
+from datetime import datetime
 
 from langgraph.graph import StateGraph, END, START
-from langchain_core.messages import ToolMessage, HumanMessage
+from langchain_core.messages import ToolMessage
 
 from app.core.state import AgentState
 
@@ -12,56 +13,52 @@ logger = logging.getLogger(__name__)
 class JarvisGraph:
     def __init__(self, llm, tools, memory):
         self.llm = llm
-        self.tools = tools # This is the MCP Client
+        self.tools = tools
         self.memory = memory
-
-        # Basic System Prompt for the ReAct Agent
+        
+        current_date = datetime.now().strftime("%B %d, %Y")
+        
         self.system_prompt = (
-            "You are Jarvis, an intelligent home assistant. "
-            "You have access to tools to help the user. "
-            "If you need information, CALL THE TOOL. Do not hallucinate.\n"
-            "If you are writing code, use the `execute_python` tool. "
-            "Always print the final result in python scripts.\n"
-            "Keep chat responses concise and warm."
+            f"You are Jarvis, an intelligent assistant with real-time access to tools.\n\n"
+            f"CURRENT DATE: {current_date}\n"
+            f"You have access to current information through web search tools.\n\n"
+            "CRITICAL RULES:\n"
+            "1. When asked for current/recent information, news, or updates - USE search_web or search_news IMMEDIATELY\n"
+            "2. DO NOT speculate or make up information - call the appropriate tool\n"
+            "3. For web searches: use search_web (general) or search_news (recent news)\n"
+            "4. For code execution: use execute_python\n"
+            "5. For file operations: use read_file, write_file, list_directory\n"
+            "6. For documentation/articles: use scrape_website with the URL\n\n"
+            "Keep responses concise and natural. Think step-by-step but ACT with tools."
         )
 
     async def agent_node(self, state: AgentState):
-        """
-        Decides the next action: Text Response OR Tool Call(s).
-        """
         messages = state["messages"]
+        system_persona = self.system_prompt
         
-        # 1. Fetch relevant memories (Simple context injection)
-        # Only search memory on the FIRST turn to avoid redundant DB hits
-        if len(messages) == 1 and isinstance(messages[0], HumanMessage):
-             memories = await asyncio.to_thread(
-                 self.memory.search, state["user_input"], state["user_id"]
-             )
-             if memories:
-                 # In a production app, we might insert a SystemMessage with context here
-                 # For now, we rely on the memory being available in the graph state if we needed it
-                 pass 
+        try:
+            memories = await asyncio.to_thread(
+                self.memory.search, state["user_input"], state["user_id"]
+            )
+            if memories:
+                system_persona += "\n\nRelevant Memories:\n" + "\n".join(f"- {m}" for m in memories)
+        except Exception as e:
+            logger.error(f"Failed to fetch memories: {e}")
 
-        # 2. Get available tools
         available_tools = await self.tools.list_tools()
 
-        # 3. Invoke LLM
         response_msg = await self.llm.run_agent_step(
             messages=messages,
-            system_persona=self.system_prompt,
+            system_persona=system_persona,
             tools=available_tools
         )
         
         return {"messages": [response_msg]}
 
     async def tool_node(self, state: AgentState):
-        """
-        Executes tools. Handles PARALLEL calls automatically.
-        """
         last_message = state["messages"][-1]
         tool_calls = last_message.tool_calls
         
-        # Define a wrapper to run a single tool safely
         async def run_single_tool(tc):
             try:
                 logger.info(f"🛠️ Executing {tc['name']} args={tc['args']}")
@@ -75,7 +72,6 @@ class JarvisGraph:
                 name=tc['name']
             )
 
-        # Execute all tools in parallel
         if tool_calls:
             tasks = [run_single_tool(tc) for tc in tool_calls]
             results = await asyncio.gather(*tasks)
@@ -83,35 +79,16 @@ class JarvisGraph:
         return {"messages": []}
 
     def route_node(self, state: AgentState) -> Literal["tools", "finalize"]:
-        """
-        Determines if we need to loop back to tools or end.
-        """
         last_message = state["messages"][-1]
-        
         if last_message.tool_calls:
             return "tools"
         return "finalize"
 
     def build(self):
         workflow = StateGraph(AgentState)
-        
         workflow.add_node("agent", self.agent_node)
         workflow.add_node("tools", self.tool_node)
-        
-        # Entry point
         workflow.add_edge(START, "agent")
-        
-        # Conditional Edge: Agent -> (Tools OR End)
-        workflow.add_conditional_edges(
-            "agent",
-            self.route_node,
-            {
-                "tools": "tools", 
-                "finalize": END
-            }
-        )
-        
-        # Loop: Tools -> Agent (To interpret results)
+        workflow.add_conditional_edges("agent", self.route_node, {"tools": "tools", "finalize": END})
         workflow.add_edge("tools", "agent")
-        
         return workflow.compile()

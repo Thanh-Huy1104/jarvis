@@ -4,9 +4,10 @@
 #   "fastmcp",
 #   "docker",
 #   "psutil", 
-#   "requests",
+#   "httpx",
 #   "duckduckgo-search",
 #   "beautifulsoup4",
+#   "trafilatura",
 # ]
 # ///
 
@@ -99,39 +100,128 @@ def _is_safe_path(path: Path) -> bool:
 # =============================================================================
 
 @mcp.tool()
-def search_web(query: str, max_results: int = 5) -> str:
-    """Searches the internet for current information using DuckDuckGo."""
+def search_web(query: str, max_results: int = 5, region: str = "wt-wt") -> str:
+    """
+    Searches the internet for current information using DuckDuckGo.
+    
+    Args:
+        query: Search query string
+        max_results: Number of results to return (default: 5, max: 20)
+        region: Region code (wt-wt=global, us-en=USA, uk-en=UK, etc.)
+    
+    Returns formatted results with title, URL, and snippet.
+    """
     try:
-        # DDGS context manager is preferred
+        max_results = min(max_results, 20)  # Cap at 20
+        
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        return json.dumps(results, indent=2)
+            results = list(ddgs.text(query, max_results=max_results, region=region))
+        
+        if not results:
+            return f"No results found for: {query}"
+        
+        # Format results for better readability
+        formatted = []
+        for i, result in enumerate(results, 1):
+            formatted.append(
+                f"[{i}] {result.get('title', 'No title')}\n"
+                f"    URL: {result.get('href', 'N/A')}\n"
+                f"    {result.get('body', 'No description')}\n"
+            )
+        
+        return "\n".join(formatted)
     except Exception as e:
         return f"Error performing web search: {e}"
 
 @mcp.tool()
-def scrape_website(url: str) -> str:
-    """Scrapes the text content of a specific webpage for reading documentation."""
+def search_news(query: str, max_results: int = 5) -> str:
+    """
+    Searches for recent news articles using DuckDuckGo News.
+    Returns timestamped news results.
+    """
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=10)
+        with DDGS() as ddgs:
+            results = list(ddgs.news(query, max_results=max_results))
+        
+        if not results:
+            return f"No news found for: {query}"
+        
+        formatted = []
+        for i, result in enumerate(results, 1):
+            date = result.get('date', 'Unknown date')
+            formatted.append(
+                f"[{i}] {result.get('title', 'No title')} ({date})\n"
+                f"    Source: {result.get('source', 'Unknown')}\n"
+                f"    URL: {result.get('url', 'N/A')}\n"
+                f"    {result.get('body', 'No description')}\n"
+            )
+        
+        return "\n".join(formatted)
+    except Exception as e:
+        return f"Error searching news: {e}"
+
+@mcp.tool()
+def scrape_website(url: str, extract_links: bool = False) -> str:
+    """
+    Scrapes the text content of a specific webpage for reading documentation.
+    
+    Args:
+        url: The webpage URL to scrape
+        extract_links: If True, also extracts and returns all links found
+    
+    Returns clean text content with optional links.
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+        }
+        res = requests.get(url, headers=headers, timeout=15)
         res.raise_for_status()
         
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # Clean up script/style tags
-        for script in soup(["script", "style", "nav", "footer"]):
-            script.decompose()
-            
-        text = soup.get_text()
+        # Extract links if requested
+        links = []
+        if extract_links:
+            for link in soup.find_all('a', href=True):
+                href = link['href']
+                # Convert relative URLs to absolute
+                if href.startswith('/'):
+                    from urllib.parse import urljoin
+                    href = urljoin(url, href)
+                if href.startswith('http'):
+                    links.append(f"{link.get_text(strip=True)} -> {href}")
+        
+        # Remove unwanted elements
+        for element in soup(["script", "style", "nav", "footer", "header", "aside", "iframe"]):
+            element.decompose()
+        
+        # Extract main content - prioritize article/main tags
+        main_content = soup.find('main') or soup.find('article') or soup.find('body')
+        if main_content:
+            text = main_content.get_text()
+        else:
+            text = soup.get_text()
         
         # Clean up whitespace
         lines = (line.strip() for line in text.splitlines())
         chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
         text = '\n'.join(chunk for chunk in chunks if chunk)
         
-        # Truncate if too huge
-        return text[:15000] + "\n...(truncated)" if len(text) > 15000 else text
+        # Build output
+        output = text[:15000] + "\n...(truncated)" if len(text) > 15000 else text
+        
+        if extract_links and links:
+            output += f"\n\n--- FOUND {len(links)} LINKS ---\n"
+            output += "\n".join(links[:50])  # Limit to 50 links
+        
+        return output
+    except requests.exceptions.Timeout:
+        return f"Error: Request timed out for {url}"
+    except requests.exceptions.RequestException as e:
+        return f"Error fetching website: {e}"
     except Exception as e:
         return f"Error scraping website: {e}"
 
@@ -411,7 +501,7 @@ def run_shell_command(command: str) -> str:
     """
     ALLOWED_PREFIXES = [
         "ls", "cat", "echo", "grep", "find", "date", "whoami", 
-        "uptime", "df", "free", "docker ps", "mkdir", "rm", "touch"
+        "uptime", "df", "free", "docker ps", "mkdir", "rm", "touch", "pwd"
     ]
     
     if not any(command.strip().startswith(p) for p in ALLOWED_PREFIXES):
