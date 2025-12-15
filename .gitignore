@@ -28,7 +28,7 @@ share/
 *.manifest
 *.spec
 certs/
-
+gcp-oauth.keys.json
 # MyPy
 .mypy_cache/
 .dmypy.json

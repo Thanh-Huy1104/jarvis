@@ -26,6 +26,7 @@ class Orchestrator:
         tts: TTSPort,
         tools: ToolsPort,
         memory: MemoryPort,
+        tts_enabled: bool = False,
     ):
         self.sessions = sessions
         self.stt = stt
@@ -33,9 +34,10 @@ class Orchestrator:
         self.tts = tts
         self.tools = tools
         self.memory = memory
+        self.tts_enabled = tts_enabled
 
     @staticmethod
-    def make_default(session_store: SessionStorePort) -> "Orchestrator":
+    def make_default(session_store: SessionStorePort, tts_enabled: bool = True) -> "Orchestrator":
         from app.adapters.llm_vllm import VllmAdapter
         from app.adapters.memory_mem0 import Mem0Adapter
         from app.adapters.stt_whisper import FasterWhisperAdapter
@@ -49,6 +51,7 @@ class Orchestrator:
             tts=KokoroAdapter(),
             tools=JarvisMCPClient(),
             memory=Mem0Adapter(),
+            tts_enabled=tts_enabled,
         )
 
     async def start(self):
@@ -128,47 +131,51 @@ class Orchestrator:
 
         # 4. Post-Processing (TTS & Memory)
         if full_response_text:
-            yield {"type": "audio_format", "sample_rate": 24000}
-            
-            spoken_text = re.sub(r'<think>.*?</think>', '', full_response_text, flags=re.DOTALL)
-            spoken_text = re.sub(r'<tool_call>.*?</tool_call>', '', spoken_text, flags=re.DOTALL)
-            spoken_text = re.sub(r'```.*?```', 'I have written the code.', spoken_text, flags=re.DOTALL)
-            
-            pending_tts = spoken_text
-            while True:
-                m = _SENT_RE.match(pending_tts.lstrip())
-                if not m: break
-                sentence = m.group(1).strip()
-                pending_tts = pending_tts[m.end():]
+            if self.tts_enabled:
+                yield {"type": "audio_format", "sample_rate": 24000}
                 
-                clean_sent = self._clean_markdown_for_tts(sentence)
-                if clean_sent and len(clean_sent) > 1:
-                    try:
-                        pcm, _, _ = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sent)
-                        if pcm and len(pcm) > 0:
-                            audio_id = str(uuid.uuid4())
-                            audio_cache[audio_id] = pcm
-                            yield {"type": "audio", "audio_id": audio_id, "text": sentence}
-                    except Exception as e:
-                        print(f"TTS Error: {e}")
-            
-            if pending_tts.strip():
-                clean_sent = self._clean_markdown_for_tts(pending_tts)
-                if clean_sent:
-                    try:
-                        pcm, _, _ = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sent)
-                        if pcm:
-                            audio_id = str(uuid.uuid4())
-                            audio_cache[audio_id] = pcm
-                            yield {"type": "audio", "audio_id": audio_id, "text": pending_tts.strip()}
-                    except Exception: pass
+                spoken_text = re.sub(r'<think>.*?</think>', '', full_response_text, flags=re.DOTALL)
+                spoken_text = re.sub(r'<tool_call>.*?</tool_call>', '', spoken_text, flags=re.DOTALL)
+                spoken_text = re.sub(r'```.*?```', 'I have written the code.', spoken_text, flags=re.DOTALL)
+                
+                pending_tts = spoken_text
+                while True:
+                    m = _SENT_RE.match(pending_tts.lstrip())
+                    if not m: break
+                    sentence = m.group(1).strip()
+                    pending_tts = pending_tts[m.end():]
+                    
+                    clean_sent = self._clean_markdown_for_tts(sentence)
+                    if clean_sent and len(clean_sent) > 1:
+                        try:
+                            pcm, _, _ = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sent)
+                            if pcm and len(pcm) > 0:
+                                audio_id = str(uuid.uuid4())
+                                audio_cache[audio_id] = pcm
+                                yield {"type": "audio", "audio_id": audio_id, "text": sentence}
+                        except Exception as e:
+                            print(f"TTS Error: {e}")
+                
+                if pending_tts.strip():
+                    clean_sent = self._clean_markdown_for_tts(pending_tts)
+                    if clean_sent:
+                        try:
+                            pcm, _, _ = await asyncio.to_thread(self.tts.speak_pcm_f32, clean_sent)
+                            if pcm:
+                                audio_id = str(uuid.uuid4())
+                                audio_cache[audio_id] = pcm
+                                yield {"type": "audio", "audio_id": audio_id, "text": pending_tts.strip()}
+                        except Exception: pass
 
             yield {"type": "done", "assistant_text": full_response_text}
 
-            # Save to Memory
+            # Save to Memory with summarization
             await asyncio.to_thread(self.sessions.append, session_id, ChatMessage(role="user", content=user_text))
             await asyncio.to_thread(self.sessions.append, session_id, ChatMessage(role="assistant", content=full_response_text))
-            await asyncio.to_thread(self.memory.add, f"User: {user_text}\nAssistant: {full_response_text}", user_id=session_id)
+            
+            # Summarize before saving to long-term memory
+            summary = await self.llm.summarize(user_text, full_response_text)
+            await asyncio.to_thread(self.memory.add, summary, user_id=session_id)
 
     # ... existing stream_voice_turn and stream_text_turn ...
     async def stream_voice_turn(

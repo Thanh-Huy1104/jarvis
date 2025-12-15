@@ -25,7 +25,7 @@ class VllmAdapter(LLMPromptPort):
             api_key="EMPTY",
             model=os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-14B-AWQ"),
             temperature=0.1,
-            streaming=True # Crucial for astream_events
+            streaming=True, # Crucial for astream_events
         )
 
     def _extract_tools_fallback(self, content: str) -> List[Dict]:
@@ -121,3 +121,24 @@ class VllmAdapter(LLMPromptPort):
         except Exception as e:
             logger.error(f"LLM Error: {e}")
             return AIMessage(content=f"Error generating response: {str(e)}")
+
+    async def summarize(self, user_message: str, assistant_message: str) -> str:
+        """Summarize a conversation turn for memory storage."""
+        system_prompt = (
+            "You are a conversation summarizer. Create a concise summary of the conversation turn below. "
+            "Focus on key information, decisions, and context that would be useful for future reference. "
+            "Keep it brief but informative (2-3 sentences max)."
+        )
+        
+        conversation = f"User: {user_message}\n\nAssistant: {assistant_message}"
+        
+        try:
+            response = await self._model.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=conversation)
+            ])
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Summarization Error: {e}")
+            # Fallback to original format if summarization fails
+            return f"User: {user_message}\nAssistant: {assistant_message}"

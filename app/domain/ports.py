@@ -12,11 +12,25 @@ class SessionStorePort(ABC):
 
 class STTPort(ABC):
     @abstractmethod
-    def transcribe(self, audio_bytes: bytes, filename: str | None = None) -> str: ...
+    def transcribe(self, audio_bytes: bytes, filename: str | None = None) -> str: 
+        """Synchronous transcription (legacy)."""
+        ...
+    
+    @abstractmethod
+    async def transcribe_async(self, audio_bytes: bytes, filename: str | None = None) -> str: 
+        """Async transcription with request queuing."""
+        ...
 
 class TTSPort(ABC):
     @abstractmethod
-    def speak_pcm_f32(self, text: str) -> tuple[bytes, int, int]: ...
+    def speak_pcm_f32(self, text: str) -> tuple[bytes, int, int]: 
+        """Synchronous TTS (legacy)."""
+        ...
+    
+    @abstractmethod
+    async def speak_pcm_f32_async(self, text: str) -> tuple[bytes, int, int]: 
+        """Async TTS with request queuing."""
+        ...
 
 class ToolsPort(ABC):
     @abstractmethod
@@ -53,15 +67,10 @@ class LLMPromptPort(ABC):
         Returns a LangChain AIMessage (which may contain text or tool_calls).
         """
         ...
-
-    # @abstractmethod
-    # async def stream_response(
-    #     self,
-    #     *,
-    #     history: List[BaseMessage],
-    #     system_persona: str,
-    # ) -> AsyncIterable[str]:
-    #     """
-    #     Used for streaming the final text response if needed.
-    #     """
-    #     ...
+    @abstractmethod
+    async def summarize(
+        self,
+        user_message: str,
+        assistant_message: str
+        ) -> str:
+        ...
