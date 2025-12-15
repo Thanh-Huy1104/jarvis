@@ -2,9 +2,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import warnings
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Suppress Phoenix/Starlette deprecation warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="starlette.templating")
 
 # Observability Imports
 import phoenix as px
@@ -21,6 +25,14 @@ async def lifespan(app: FastAPI):
     # 1. Start Observability (The "Eye")
     # This launches the UI at http://localhost:6006
     try:
+        import os
+        # Clear Phoenix database if it exists to avoid GraphQL errors
+        phoenix_db_path = os.path.expanduser("~/.phoenix")
+        if os.path.exists(phoenix_db_path):
+            import shutil
+            print(f"🔧 Clearing Phoenix cache at {phoenix_db_path}")
+            shutil.rmtree(phoenix_db_path, ignore_errors=True)
+        
         session = px.launch_app()
         session_url = getattr(session, 'url', 'http://localhost:6006')
         print(f"🔭 Phoenix UI active at: {session_url}")
@@ -33,6 +45,8 @@ async def lifespan(app: FastAPI):
         
     except Exception as e:
         print(f"⚠️ Failed to launch Phoenix or OpenTelemetry: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 2. Setup Stores
     app.state.session_store = InMemorySessionStore()

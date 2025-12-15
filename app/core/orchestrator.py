@@ -37,7 +37,7 @@ class Orchestrator:
         self.tts_enabled = tts_enabled
 
     @staticmethod
-    def make_default(session_store: SessionStorePort, tts_enabled: bool = True) -> "Orchestrator":
+    def make_default(session_store: SessionStorePort, tts_enabled: bool = False) -> "Orchestrator":
         from app.adapters.llm_vllm import VllmAdapter
         from app.adapters.memory_mem0 import Mem0Adapter
         from app.adapters.stt_whisper import FasterWhisperAdapter
