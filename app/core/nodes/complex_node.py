@@ -3,8 +3,10 @@
 import logging
 import time
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from app.core.utils.code_extraction import extract_code, generate_skill_name
+from app.core.utils.code_extraction import extract_code
 from app.core.utils.code_transform import ensure_print_output
+from app.prompts.code_generation import get_code_generation_prompt
+from app.prompts.synthesis import get_synthesis_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -42,78 +44,13 @@ async def reason_and_code(engine, state) -> dict:
         used_skill_names = []
         logger.info("No relevant skills found in library")
     
-    # Build enhanced prompt
-    directives_str = "\n".join(f"- {d}" for d in state.get("global_directives", []))
-    
-    prompt = f"""
-TASK: {state['user_input']}
-
-{state.get('memory_context', '')}
-
-CORE DIRECTIVES:
-{directives_str}
-
-AVAILABLE CAPABILITIES:
-
-1. Python Sandbox (PREFERRED for most tasks):
-   Pre-installed packages: psutil, numpy, pandas, matplotlib, scipy, scikit-learn,
-   requests, httpx, beautifulsoup4, ddgs, wikipedia, boto3, google-api-python-client,
-   psycopg2, pymongo, redis, sqlalchemy, openpyxl, pillow, pyyaml
-   
-   Use for:
-   - Web search (DDGS().text() or DDGS().news())
-   - Web scraping (BeautifulSoup)
-   - Data analysis (pandas, numpy)
-   - API calls (requests, httpx)
-   - System monitoring inside sandbox (psutil)
-
-2. MCP Tools (ONLY for host system operations):
-   Available when Python sandbox cannot access host system:
-   - list_directory(path) - List files on HOST filesystem
-   - read_file(filepath) - Read files from HOST
-   - write_file(filepath, content) - Write files to HOST
-   - run_shell_command(command) - Execute shell on HOST (git, apt, etc.)
-   - manage_docker(action, container_name) - Control Docker containers
-   
-   Use ONLY when you need to:
-   - Access files outside the sandbox (host filesystem)
-   - Run git commands or system package managers
-   - Manage Docker containers
-   - Execute system-level operations
-
-DECISION GUIDE:
-- Default to Python sandbox code for 90% of tasks
-- Use MCP tools ONLY when you need host system access
-
-{skills_section}
-
-Provide a clear, well-formatted response. If you need to write code:
-1. Briefly explain what you'll do (1-2 sentences)
-2. Write the Python code in a ```python``` code block
-3. You can combine/modify the reference skills above if they're helpful
-4. Import any packages you need - they're pre-installed or will auto-install
-
-CRITICAL CODE REQUIREMENTS:
-- ALWAYS use print() to display results - without print(), the user sees no output!
-- Store results in variables AND print them
-- Example: result = function(); print(result)
-- For functions that return data, call them and print the result
-
-MATPlOTLIB PLOTS:
-- DO NOT use plt.show() - the sandbox is headless and cannot display plots
-- Instead, SAVE plots to /workspace/plot.png using plt.savefig('/workspace/plot.png')
-- The system will automatically detect and display the saved plot.
-- Example:
-  plt.figure()
-  plt.plot(data)
-  plt.savefig('/workspace/plot.png')
-
-IMPORTANT: Only write Python code for sandbox execution. If the task requires host system access 
-(reading/writing host files, git operations, docker management), explicitly state that MCP tools 
-are needed and DO NOT generate Python code. Instead, describe what MCP tools should be used.
-
-Keep your response concise and user-friendly. Do NOT output your internal reasoning process.
-"""
+    # Build enhanced prompt using template
+    prompt = get_code_generation_prompt(
+        user_input=state['user_input'],
+        memory_context=state.get('memory_context', ''),
+        directives=state.get("global_directives", []),
+        skills_section=skills_section
+    )
     
     system_msg = SystemMessage(content="You are Jarvis, an expert AI assistant with a Python sandbox and MCP tools for host access. Prefer Python sandbox for most tasks. Use MCP tools only when you need to access the host filesystem, run shell commands, or manage Docker containers.")
     user_msg = HumanMessage(content=prompt)
@@ -187,20 +124,7 @@ async def execute_code(engine, state) -> dict:
     result_for_llm = re.sub(r'Plot saved to /workspace/.*?\n?', '', result_for_llm)
     
     # Use SPEED LLM to synthesize a natural response from raw execution output
-    synthesis_prompt = f"""The user asked: {state['user_input']}
-
-Code was executed and produced this output:
-{result_for_llm}
-
-Create a clear, natural response that:
-1. Answers the user's question directly
-2. Presents the data in an easy-to-read format
-3. Highlights key findings or important information
-4. If there are plots, mention: "I've generated a visualization for you."
-5. Keep it concise but informative
-
-DO NOT include the raw code or technical details unless relevant.
-"""
+    synthesis_prompt = get_synthesis_prompt(state['user_input'], result_for_llm)
     
     try:
         synthesis_response = await engine.llm.run_agent_step(
@@ -226,30 +150,8 @@ DO NOT include the raw code or technical details unless relevant.
     
     # Memory saving will be handled async in API layer
     
-    # Check if this skill already exists by name AND code
-    skill_name = generate_skill_name(state["user_input"])
-    existing_skill = state.get("existing_skill_code")
-    
-    # Skip save if:
-    # 1. Skill name matches any of the skills used in this request
-    # 2. Exact same code already exists
-    skip_approval = False
-    
-    # Check if skill name exists in used_skill_names
-    used_skills = state.get("used_skill_names", [])
-    if skill_name in used_skills:
-        logger.info(f"✓ Skill '{skill_name}' found in used_skill_names, skipping save")
-        skip_approval = True
-    elif existing_skill:
-        # Check code similarity
-        code_identical = existing_skill.strip() == code.strip()
-        if code_identical:
-            logger.info(f"✓ Skill '{skill_name}' has identical code, skipping save")
-            skip_approval = True
-        else:
-            logger.info(f"Skill '{skill_name}' exists but code differs, will save new version")
-    else:
-        logger.info(f"No existing skill found, will save as new\n")
+    # Note: Skill naming and saving will be handled asynchronously in admin_approval node
+    # Don't pre-generate skill name here to avoid blocking execution
     
     elapsed = (time.time() - start_time) * 1000
     engine._timing['execute_code'] = elapsed
@@ -258,34 +160,72 @@ DO NOT include the raw code or technical details unless relevant.
     return {
         "execution_result": result_for_llm,  # Pruned for memory (no base64)
         "final_response": updated_response,  # Full with plots for UI
-        "pending_skill_name": skill_name,
-        "skill_approved": skip_approval
+        "generated_code": code,  # Pass code for skill saving
+        "existing_skill_code": state.get("existing_skill_code"),
+        "used_skill_names": state.get("used_skill_names", []),
+        "skill_approved": False  # Will be evaluated in admin_approval
     }
 
 
-def admin_approval(engine, state) -> dict:
+async def admin_approval(engine, state) -> dict:
     """
-    Node 5: Admin checkpoint for saving skills.
-    Skips if skill already exists or was auto-approved.
+    Node 5: Admin checkpoint for saving skills using LLM-generated names.
+    Handles skill deduplication and async saving.
     """
-    # Check if already approved (from executor)
-    if state.get("skill_approved", False):
-        logger.info("Skill already approved/exists, skipping save")
+    import asyncio
+    from app.prompts.skill_naming import get_skill_naming_prompt
+    
+    # Check if skill already exists (from used skills)
+    existing_skill = state.get("existing_skill_code")
+    used_skills = state.get("used_skill_names", [])
+    code = state.get("generated_code", "")
+    
+    if not code:
+        logger.info("No code to save as skill")
         return {"skill_approved": True}
     
-    logger.info("Saving new skill to library")
+    # Check code similarity with existing skills
+    if existing_skill:
+        code_identical = existing_skill.strip() == code.strip()
+        if code_identical:
+            logger.info("✓ Skill has identical code to existing, skipping save")
+            return {"skill_approved": True}
     
-    skill_name = state.get("pending_skill_name") or generate_skill_name(state["user_input"])
+    # Generate skill name using LLM for better naming
+    async def generate_and_save_skill():
+        try:
+            naming_prompt = get_skill_naming_prompt(state["user_input"], code)
+            
+            naming_response = await engine.llm.run_agent_step(
+                messages=[HumanMessage(content=naming_prompt)],
+                system_persona="You are a skill naming expert. Generate concise kebab-case names.",
+                tools=None,
+                mode="speed"
+            )
+            
+            skill_name = engine.llm.sanitize_thought_process(str(naming_response.content)).strip()
+            # Clean up any quotes or extra characters
+            skill_name = skill_name.replace('"', '').replace("'", '').strip()
+            
+            # Check if this skill name was already used in this request
+            if skill_name in used_skills:
+                logger.info(f"✓ Skill '{skill_name}' found in used_skill_names, skipping save")
+                return
+            
+            logger.info(f"Saving skill with LLM-generated name: '{skill_name}'")
+            
+            engine.skills.save_skill(
+                name=skill_name,
+                code=code,
+                description=state["user_input"]
+            )
+            
+            logger.info(f"✓ Skill '{skill_name}' saved successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to save skill: {e}")
     
-    engine.skills.save_skill(
-        name=skill_name,
-        code=state["generated_code"],
-        description=state["user_input"]
-    )
+    # Run skill saving asynchronously (non-blocking)
+    asyncio.create_task(generate_and_save_skill())
     
-    logger.info(f"Skill '{skill_name}' saved successfully")
-    
-    return {
-        "pending_skill_name": skill_name,
-        "skill_approved": True
-    }
+    return {"skill_approved": True}

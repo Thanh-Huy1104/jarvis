@@ -7,6 +7,8 @@ import asyncio
 from langchain_core.messages import HumanMessage
 from app.core.state import SubTask
 from app.core.utils.code_extraction import extract_code
+from app.prompts.parallel import get_parallel_planning_prompt, get_parallel_worker_prompt
+from app.prompts.synthesis import get_parallel_synthesis_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -21,22 +23,7 @@ async def plan_parallel_tasks(engine, state) -> dict:
     logger.info(f"User input: {state['user_input']}")
     logger.info("="*60)
     
-    planning_prompt = f"""Analyze this task and determine if it can be broken into independent parallel subtasks:
-
-Task: {state['user_input']}
-
-If the task involves multiple INDEPENDENT operations that can run simultaneously (e.g., "fetch Bitcoin AND Ethereum prices", "generate 3 different charts"), break it into subtasks.
-
-If the task is sequential or single-operation, return a single task.
-
-Respond ONLY with valid JSON, no explanations:
-{{
-  "parallel": true/false,
-  "subtasks": [
-    {{"id": "task_1", "description": "...", "code_hint": "..."}},
-    {{"id": "task_2", "description": "...", "code_hint": "..."}}
-  ]
-}}"""
+    planning_prompt = get_parallel_planning_prompt(state['user_input'])
     
     response = await engine.llm.run_agent_step(
         messages=[HumanMessage(content=planning_prompt)],
@@ -100,25 +87,11 @@ async def execute_parallel_worker(engine, state, task: SubTask, status_callback=
         logger.warning(f"No status callback available for [{task['id']}]")
     
     # Generate code for this specific subtask
-    prompt = f"""Write ONLY the Python code for this task:
-
-Task: {task['description']}
-Hint: {task.get('code_hint', 'Write clean Python code')}
-
-Available packages (pre-installed):
-- psutil, numpy, pandas, matplotlib, requests, httpx
-- ddgs (use: from ddgs import DDGS), wikipedia, beautifulsoup4
-- boto3, google-api-python-client, psycopg2, pymongo
-
-CRITICAL: Use print() to display results - without print(), output is invisible!
-Example: result = function(); print(result)
-
-For matplotlib plots:
-- DO NOT use plt.show() (sandbox is headless)
-- SAVE to /workspace/plot_{task_id}.png using plt.savefig()
-- Print confirmation: "Plot saved to /workspace/plot_{task_id}.png"
-
-Import what you need and write the code. Respond with ONLY a Python code block, nothing else. No explanations."""
+    prompt = get_parallel_worker_prompt(
+        task_description=task['description'],
+        code_hint=task.get('code_hint', 'Write clean Python code'),
+        task_id=task['id']
+    )
     
     response = await engine.llm.run_agent_step(
         messages=[HumanMessage(content=prompt)],
@@ -247,27 +220,7 @@ async def aggregate_parallel_results(engine, state) -> dict:
             results_context += f"- {task['id']}: {task.get('result', 'Unknown error')}\n"
     
     # Use AI to synthesize and present results intelligently
-    synthesis_prompt = f"""You executed multiple tasks in parallel. Analyze the results and provide a clear, insightful summary.
-
-{results_context}
-
-Provide a natural response that:
-1. Acknowledges what was done in parallel
-2. For EACH task, show the code that was generated and its output
-3. Highlight interesting findings or patterns in the results
-4. Answer the user's original question directly
-
-Format each task's output like this:
-**Task: [description]**
-```python
-[the actual code]
-```
-**Output:**
-```
-[the result]
-```
-
-Be concise but informative. Show all code blocks and results."""
+    synthesis_prompt = get_parallel_synthesis_prompt(state['user_input'], results_context)
     
     logger.info("Synthesizing results with AI")
     response = await engine.llm.run_agent_step(

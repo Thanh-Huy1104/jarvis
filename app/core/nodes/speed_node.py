@@ -1,7 +1,9 @@
 """Speed response node - fast path for simple queries"""
 
 import logging
+import asyncio
 from langchain_core.messages import HumanMessage, SystemMessage
+from app.prompts.speed_response import get_speed_response_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +38,6 @@ async def speed_response(engine, state) -> dict:
         system_persona=str(system_msg.content),
         tools=None,
         mode="speed"
-    )
-    
-    # Save to memory
-    engine.memory.add(
-        text=f"User: {state['user_input']}\nAssistant: {response.content}",
-        user_id=state["user_id"]
     )
     
     return {

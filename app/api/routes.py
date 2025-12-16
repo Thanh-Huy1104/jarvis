@@ -213,23 +213,43 @@ async def ws_voice(ws: WebSocket):
                     # Save skill and memory asynchronously in background (doesn't block UI)
                     final_state = graph.get_state(config)
                     if final_state:
-                        # Save memory for all interactions
-                        execution_result = final_state.values.get("execution_result", "")
-                        final_response = final_state.values.get("final_response", "")
-                        memory_text = f"User: {text_input}\n"
-                        if execution_result:
-                            memory_text += f"Assistant generated and executed code.\nResult: {execution_result}"
-                        else:
-                            memory_text += f"Assistant: {final_response}"
+                        # Synthesize and save memory for all interactions
+                        async def save_synthesized_memory():
+                            try:
+                                from app.prompts.memory_synthesis import get_memory_synthesis_prompt
+                                from langchain_core.messages import HumanMessage
+                                
+                                execution_result = final_state.values.get("execution_result", "")
+                                final_response = final_state.values.get("final_response", "")
+                                
+                                # Use LLM to synthesize memory into bullet points
+                                synthesis_prompt = get_memory_synthesis_prompt(
+                                    user_input=str(text_input),
+                                    assistant_response=final_response,
+                                    execution_result=execution_result if execution_result else ""
+                                )
+                                
+                                synthesis_response = await engine.llm.run_agent_step(
+                                    messages=[HumanMessage(content=synthesis_prompt)],
+                                    system_persona="You are a memory synthesizer. Create concise bullet points.",
+                                    tools=None,
+                                    mode="speed"
+                                )
+                                
+                                synthesized_memory = engine.llm.sanitize_thought_process(str(synthesis_response.content))
+                                
+                                # Save synthesized memory
+                                await asyncio.to_thread(
+                                    engine.memory.add,
+                                    text=synthesized_memory,
+                                    user_id=session_id
+                                )
+                                logger.info(f"Saved synthesized memory: {synthesized_memory[:100]}...")
+                                
+                            except Exception as e:
+                                logger.error(f"Failed to synthesize/save memory: {e}")
                         
-                        asyncio.create_task(
-                            asyncio.to_thread(
-                                engine.memory.add,
-                                text=memory_text,
-                                user_id=session_id
-                            )
-                        )
-                        logger.info("Saving interaction to memory in background")
+                        asyncio.create_task(save_synthesized_memory())
                         
                         # Save skill only if needed
                         if skill_data and final_state.values.get("generated_code"):
