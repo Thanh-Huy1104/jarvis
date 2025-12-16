@@ -25,11 +25,20 @@ openinference-instrumentation-langchain
 mem0ai                  # Main Mem0 wrapper
 qdrant-client           # Vector Database
 sentence-transformers   # Embeddings for Memory
+kuzu                    # Embedded Graph Database for Memory
+rank-bm25               # Required by Mem0 for Kuzu graph integration
+
+# --- Intent Routing (The "Brain") ---
+# Using 7B LLM for classification instead of semantic-router
+
+# --- Skill Library (Code Storage) ---
+chromadb                # Semantic code snippet library
+
+# --- MCP Integration ---
+mcp                     # Model Context Protocol client
 
 # --- Tools & Sandbox (The "Body") ---
 docker                  # Python Docker SDK for Sandbox
-fastmcp                 # Quick MCP Server creation
-mcp                     # Model Context Protocol
 psutil                  # System Health Tool
 
 # --- Audio: STT (Hearing) ---
@@ -42,4 +51,3 @@ soundfile
 
 # --- Utilities ---
 python-dotenv           # Environment variables
-uv                      # Dependency manager (required by FastMCP)

@@ -1,121 +1,88 @@
-import json
 import os
 import re
 import logging
-import ast
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Literal
 
 from langchain_core.messages import (
-    AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+    AIMessage, BaseMessage, HumanMessage, SystemMessage
 )
-# We use the standard ChatOpenAI which emits events automatically
 try:
     from langchain_openai import ChatOpenAI
 except ImportError:
     from langchain_community.chat_models import ChatOpenAI
-
 from app.domain.ports import LLMPromptPort
 
 logger = logging.getLogger(__name__)
 
 class VllmAdapter(LLMPromptPort):
     def __init__(self) -> None:
-        self._model = ChatOpenAI(
-            base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
-            api_key="EMPTY",
-            model=os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-14B-AWQ"),
-            temperature=0.1,
-            streaming=True, # Crucial for astream_events
-        )
-
-    def _extract_tools_fallback(self, content: str) -> List[Dict]:
-        """Same robust fallback logic as before."""
-        tools_found = []
+        # Main model for complex reasoning (port 8000)
+        self.base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
+        self.model_name = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-14B-AWQ")
         
-        # 1. Markdown Code Blocks
-        code_block_pattern = re.compile(r"```python\n(.*?)\n```", re.DOTALL)
-        code_matches = code_block_pattern.findall(content)
-        for code in code_matches:
-            tools_found.append({
-                "name": "execute_python",
-                "args": {"code": code.strip(), "dependencies": []},
-                "id": f"call_markdown_{len(tools_found)}"
-            })
-
-        # 2. XML Tags
-        xml_pattern = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
-        xml_matches = xml_pattern.findall(content)
-        for match in xml_matches:
-            clean_str = match.replace("```json", "").replace("```", "").strip()
-            data = None
-            try:
-                data = json.loads(clean_str)
-            except json.JSONDecodeError:
-                try:
-                    data = ast.literal_eval(clean_str)
-                except Exception:
-                    pass
-            
-            if isinstance(data, dict):
-                tools_found.append({
-                    "name": data.get("name"),
-                    "args": data.get("arguments", {}),
-                    "id": f"call_xml_{len(tools_found)}"
-                })
-
-        return tools_found
-
-    def _convert_mcp_to_openai_tools(self, mcp_tools: List[Dict]) -> List[Dict]:
-        """Convert to format expected by bind_tools"""
-        # ChatOpenAI expects dicts or pydantic models. 
-        # We manually format to OpenAI schema to be safe.
-        openai_tools = []
-        for t in mcp_tools:
-            openai_tools.append({
-                "type": "function",
-                "function": {
-                    "name": t["name"],
-                    "description": t.get("description", ""),
-                    "parameters": t.get("args_schema", {"type": "object", "properties": {}})
-                }
-            })
-        return openai_tools
+        # Speed model for fast responses (port 8001)
+        self.speed_base_url = os.getenv("VLLM_SPEED_BASE_URL", "http://localhost:8001/v1")
+        self.speed_model_name = os.getenv("VLLM_SPEED_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct-AWQ")
+        
+        # Complex reasoning model (14B)
+        self._model = ChatOpenAI(
+            base_url=self.base_url,
+            api_key="EMPTY",
+            model=self.model_name,
+            temperature=0.1,
+            streaming=True,
+        )
+        
+        # Fast response model (7B)
+        self._speed_model = ChatOpenAI(
+            base_url=self.speed_base_url,
+            api_key="EMPTY",
+            model=self.speed_model_name,
+            temperature=0.3,  # Slightly higher for more natural chat
+            streaming=True,
+        )
 
     async def run_agent_step(
         self,
         messages: List[BaseMessage],
         system_persona: str,
-        tools: List[Dict[str, Any]] = None
+        tools: List[Dict[str, Any]] | None = None,
+        mode: Literal["speed", "think"] = "speed"
     ) -> AIMessage:
+        """
+        Runs one agent reasoning step with dynamic mode switching.
         
-        # Add hint for Python
-        if tools:
-            system_persona += (
-                "\n\nIMPORTANT TOOL HINT:\n"
-                "To run Python code, you can simply write a markdown block:\n"
-                "```python\nprint('Hello')\n```\n"
-                "This is preferred over JSON for long scripts."
-            )
+        Args:
+            messages: Conversation history
+            system_persona: System prompt defining agent behavior
+            tools: Unused (kept for compatibility)
+            mode: "speed" for fast responses, "think" for deep reasoning
+            
+        Returns:
+            AIMessage with response
+        """
 
         # Prepend System Message
         full_messages = [SystemMessage(content=system_persona)] + messages
         
-        # Bind Tools
-        llm_with_tools = self._model
-        if tools:
-            openai_tools = self._convert_mcp_to_openai_tools(tools)
-            llm_with_tools = self._model.bind_tools(openai_tools)
+        # Select model configuration based on mode
+        if mode == "speed":
+            # FAST PATH: Use 7B model on 3060 Ti (port 8001)
+            llm = self._speed_model.bind(
+                temperature=0.7,
+                max_tokens=512
+            )
+            logger.info("Using SPEED mode (7B model on 3060 Ti)")
+        else:
+            # THINKING PATH: Use 14B model for deep reasoning (port 8000)
+            llm = self._model.bind(
+                temperature=0.6
+            )
+            logger.info("Using THINK mode (14B model)")
 
         try:
             # invoke() will emit events to the graph's event bus automatically
-            response = await llm_with_tools.ainvoke(full_messages)
-            
-            # Apply Fallback Logic if no native tools found
-            if not response.tool_calls:
-                manual_tools = self._extract_tools_fallback(response.content)
-                if manual_tools:
-                    response.tool_calls = manual_tools
-            
+            response = await llm.ainvoke(full_messages)
             return response
 
         except Exception as e:
@@ -137,8 +104,34 @@ class VllmAdapter(LLMPromptPort):
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=conversation)
             ])
-            return response.content.strip()
+            return str(response.content)
         except Exception as e:
             logger.error(f"Summarization Error: {e}")
             # Fallback to original format if summarization fails
             return f"User: {user_message}\nAssistant: {assistant_message}"
+
+    def sanitize_thought_process(self, content: str) -> str:
+        """
+        Removes the <think> tags for the final user TTS/display.
+        Reasoning models may output their chain of thought in <think></think> tags.
+        This method extracts only the final answer for the user.
+        
+        Args:
+            content: Raw LLM response potentially containing <think> tags
+            
+        Returns:
+            Clean content with thought process removed
+        """
+        if not content:
+            return content
+            
+        # Remove <think>...</think> blocks (including multiline)
+        cleaned = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+        
+        # Also handle <thinking> variant if model uses different tags
+        cleaned = re.sub(r'<thinking>.*?</thinking>', '', cleaned, flags=re.DOTALL).strip()
+        
+        # Clean up any excessive whitespace left behind
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        
+        return cleaned if cleaned else content  # Fallback to original if empty

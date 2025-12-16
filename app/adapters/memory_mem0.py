@@ -19,6 +19,12 @@ class Mem0Adapter(MemoryPort):
                     "path": "./eve_memory_local", 
                 }
             },
+            "graph_store": {
+                "provider": "kuzu",  # Local embedded graph DB
+                "config": {
+                    "db_path": "./db/kuzu_graph"
+                }
+            },
             "llm": {
                 "provider": "openai",
                 "config": {
@@ -47,6 +53,7 @@ class Mem0Adapter(MemoryPort):
             self.client = None
 
     def add(self, text: str, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Stores interaction in both Vector and Graph stores"""
         if not self.client:
             return
         try:
@@ -88,3 +95,59 @@ class Mem0Adapter(MemoryPort):
         except Exception as e:
             logger.error(f"Error searching Mem0: {e}")
             return []
+
+    def get_context(self, query: str, user_id: str) -> Dict[str, Any]:
+        """
+        Retrieves the 'Context Sandwich' for the Planner.
+        Combines vector similarity search with graph relationships.
+        
+        Args:
+            query: The current user query
+            user_id: User identifier
+            
+        Returns:
+            Dictionary with relevant_history and user_directives
+        """
+        if not self.client:
+            return {
+                "relevant_history": [],
+                "user_directives": self._get_hardcoded_directives()
+            }
+        
+        try:
+            # 1. Search Vector (Similar past conversations)
+            history = self.search(query, user_id=user_id, limit=5)
+            
+            # 2. Search Graph (Entities & Relationships)
+            # Mem0 v1.1+ automatically includes relations in search results if graph is enabled
+            # The graph store enriches the context with entity relationships
+            
+            return {
+                "relevant_history": [h.get('memory', h.get('text', '')) for h in history],
+                "user_directives": self._get_hardcoded_directives(),
+                "metadata": {
+                    "context_count": len(history),
+                    "graph_enabled": True
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting context from memory: {e}")
+            return {
+                "relevant_history": [],
+                "user_directives": self._get_hardcoded_directives()
+            }
+
+    def _get_hardcoded_directives(self) -> List[str]:
+        """
+        These act as the 'Constitution' - core behavioral rules.
+        These directives are always included in the context.
+        """
+        return [
+            "Always output Python code for complex tasks.",
+            "Do not delete files outside /workspace.",
+            "User prefers concise answers.",
+            "When executing code, ensure proper error handling.",
+            "Prioritize security and data privacy.",
+            "Use the sandbox environment for all code execution.",
+            "Provide explanations for complex operations."
+        ]

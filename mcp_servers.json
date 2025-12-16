@@ -1,20 +1,11 @@
 {
   "servers": {
-    "desktop": {
-      "description": "Local desktop tools (filesystem, docker, web search, etc.)",
+    "desktop_essential": {
+      "description": "Essential host system tools (filesystem, shell, docker) - Only tools that cannot be done in Python sandbox",
       "command": "uv",
       "args_template": ["run", "{script}"],
-      "script": "servers/desktop/server.py",
+      "script": "servers/desktop/server_essential.py",
       "enabled": true
-    },
-    "google_calendar": {
-      "description": "Google Calendar integration",
-      "command": "npx",
-      "args_template": ["-y", "@cocal/google-calendar-mcp"],
-      "enabled": "${GOOGLE_CALENDAR_ENABLED}",
-      "env": {
-        "GOOGLE_OAUTH_CREDENTIALS": "${GOOGLE_OAUTH_CREDENTIALS}"
-      }
     }
   }
 }

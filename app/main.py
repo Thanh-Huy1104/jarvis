@@ -3,27 +3,38 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import warnings
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Suppress Phoenix/Starlette deprecation warnings
+# Configure logging level to show INFO logs
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Set specific loggers
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+logging.getLogger("app").setLevel(logging.INFO)
+
+# Suppress deprecation warnings from dependencies
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="starlette.templating")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_community.chat_models.openai")
 
 # Observability Imports
 import phoenix as px
 from phoenix.otel import register
 
 from app.api.routes import router
-from app.core.orchestrator import Orchestrator
-from app.core.state import InMemorySessionStore # Or your DB store
+from app.core.engine import JarvisEngine
+from app.core.state import InMemorySessionStore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[Main] Initializing application state...")
     
     # 1. Start Observability (The "Eye")
-    # This launches the UI at http://localhost:6006
     try:
         import os
         # Clear Phoenix database if it exists to avoid GraphQL errors
@@ -52,19 +63,15 @@ async def lifespan(app: FastAPI):
     app.state.session_store = InMemorySessionStore()
     app.state.audio_cache = {}
     
-    # 3. Initialize Orchestrator
-    app.state.orch = Orchestrator.make_default(session_store=app.state.session_store)
-    
-    if hasattr(app.state.orch, "start"):
-        await app.state.orch.start()
+    # 3. Initialize JarvisEngine (Code-First Architecture)
+    app.state.engine = JarvisEngine()
+    print("[Main] JarvisEngine initialized with code-first workflow")
     
     print("[Main] Jarvis is ready.")
     
     yield
     
     print("[Main] Shutting down...")
-    if hasattr(app.state.orch, "stop"):
-        await app.state.orch.stop()
 
 app = FastAPI(title="Jarvis Local", lifespan=lifespan)
 

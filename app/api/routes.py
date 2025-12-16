@@ -19,7 +19,7 @@ async def ws_voice(ws: WebSocket):
     """WebSocket handler for voice and text interaction."""
     await ws.accept()
     
-    orch = ws.app.state.orch
+    engine = ws.app.state.engine
     audio_cache = ws.app.state.audio_cache
     
     # Queue for incoming messages from the client
@@ -70,45 +70,198 @@ async def ws_voice(ws: WebSocket):
 
             session_id = "default_session"
             
-            orchestrator_stream = None
-            
-            if audio_bytes: 
-                orchestrator_stream = orch.stream_voice_turn(
-                    session_id=session_id,
-                    audio_bytes=audio_bytes,
-                    filename="mic.webm",
-                    audio_cache=audio_cache
-                )
-            elif text_input:
-                orchestrator_stream = orch.stream_text_turn(
-                    session_id=session_id,
-                    user_text=text_input,
-                    audio_cache=audio_cache
-                )
-            
-            if orchestrator_stream:
-                async for event in orchestrator_stream:
-                    event_type = event.get("type")
-
-                    if event_type == "audio":
-                        audio_id = event["audio_id"]
-                        text = event["text"]
-                        
+            # Handle text or audio input with JarvisEngine
+            try:
+                if text_input:
+                    await ws.send_text(json.dumps({"type": "assistant_start"}))
+                    
+                    # Create callback for task status updates
+                    async def task_status_callback(task_id: str, status: str):
                         await ws.send_text(json.dumps({
-                            "type": "audio_start", 
-                            "text": text
+                            "type": "task_update",
+                            "task_id": task_id,
+                            "status": status
                         }))
-
-                        wav_data = audio_cache.get(audio_id)
-                        if wav_data:
-                            for chunk in iter_pcm_chunks(wav_data):
-                                await ws.send_bytes(chunk)
-                            del audio_cache[audio_id]
-
-                        await ws.send_text(json.dumps({"type": "audio_end"}))
-
-                    elif event_type in ["transcript", "token", "assistant_start", "done", "error"]:
-                        await ws.send_text(json.dumps(event, ensure_ascii=False))                
+                    
+                    # Set callback on engine instance (not in state to avoid serialization issues)
+                    engine._task_callback = task_status_callback
+                    
+                    # Build the graph and stream events
+                    graph = engine.build()
+                    config = {"configurable": {"thread_id": session_id}}
+                    
+                    execution_result_sent = False
+                    done_sent = False
+                    skill_data = None  # Store skill data for async saving
+                    current_node = None  # Track which node is executing
+                    parallel_mode = False  # Track if we're in parallel execution
+                    
+                    # Stream the engine processing
+                    async for event in graph.astream_events(
+                        {
+                            "user_input": text_input, 
+                            "user_id": session_id
+                        },
+                        config=config,
+                        version="v2"
+                    ):
+                        # Track node execution
+                        if event["event"] == "on_chain_start":
+                            current_node = event.get("name", "")
+                            # Enter parallel mode when parallel_executor starts
+                            if current_node == "parallel_executor":
+                                parallel_mode = True
+                        
+                        # Exit parallel mode when parallel_executor ends
+                        if event["event"] == "on_chain_end":
+                            node_name = event.get("name", "")
+                            if node_name == "parallel_executor":
+                                parallel_mode = False
+                        
+                        # Stream partial responses from LLM (but NOT from planning/synthesis/parallel workers)
+                        if event["event"] == "on_chat_model_stream":
+                            chunk = event.get("data", {}).get("chunk")
+                            
+                            # Skip streaming during parallel execution (workers run concurrently)
+                            if parallel_mode:
+                                continue
+                            
+                            # Skip streaming from internal/backend nodes
+                            if current_node in ["parallel_planner", "aggregate_parallel_results"]:
+                                continue
+                            
+                            if chunk and hasattr(chunk, "content") and chunk.content:
+                                # Send all content including whitespace to preserve formatting
+                                content = str(chunk.content)
+                                await ws.send_text(json.dumps({
+                                    "type": "token",
+                                    "text": content
+                                }))
+                        
+                        # Send task status updates for parallel execution
+                        elif event["event"] == "on_chain_end":
+                            node_name = event.get("name", "")
+                            
+                            # Send task queue when parallel planning completes
+                            if node_name == "parallel_planner":
+                                output = event.get("data", {}).get("output", {})
+                                plan = output.get("plan", [])
+                                if plan and len(plan) > 1:
+                                    logger.info(f"Sending task queue: {len(plan)} tasks")
+                                    await ws.send_text(json.dumps({
+                                        "type": "task_queue",
+                                        "tasks": [
+                                            {
+                                                "id": task["id"],
+                                                "description": task["description"],
+                                                "status": "queued"
+                                            } for task in plan
+                                        ]
+                                    }))
+                            
+                            # Handle regular execution
+                            if node_name == "executor" and not execution_result_sent:
+                                output = event.get("data", {}).get("output", {})
+                                execution_result = output.get("execution_result", "")
+                                if execution_result:
+                                    logger.info(f"Streaming execution result: {len(execution_result)} chars")
+                                    # Append the execution result as tokens
+                                    result_text = f"\n\n**Execution Result:**\n```\n{execution_result}\n```"
+                                    await ws.send_text(json.dumps({
+                                        "type": "token",
+                                        "text": result_text
+                                    }))
+                                    execution_result_sent = True
+                                    
+                                    # Capture skill data for async saving ONLY if code was executed successfully
+                                    # and it's not already approved (i.e., it's a new skill)
+                                    if not output.get("skill_approved", False) and execution_result:
+                                        skill_data = {
+                                            "name": output.get("pending_skill_name"),
+                                            "code": None,  # Will get from state
+                                            "description": text_input
+                                        }
+                                    
+                                    # Send done immediately after execution result
+                                    logger.info("Sending done event after execution")
+                                    await ws.send_text(json.dumps({"type": "done"}))
+                                    done_sent = True
+                            elif node_name == "parallel_executor" and not execution_result_sent:
+                                # Handle parallel execution results
+                                output = event.get("data", {}).get("output", {})
+                                final_response = output.get("final_response", "")
+                                if final_response:
+                                    logger.info(f"Streaming parallel results: {len(final_response)} chars")
+                                    await ws.send_text(json.dumps({
+                                        "type": "token",
+                                        "text": final_response
+                                    }))
+                                    execution_result_sent = True
+                                    
+                                    # Send done immediately after parallel results
+                                    logger.info("Sending done event after parallel execution")
+                                    await ws.send_text(json.dumps({"type": "done"}))
+                                    done_sent = True
+                            elif node_name == "speed_agent" and not done_sent:
+                                # Speed agent doesn't execute code, send done
+                                logger.info("Sending done event after speed response")
+                                await ws.send_text(json.dumps({"type": "done"}))
+                                done_sent = True
+                    
+                    # Save skill and memory asynchronously in background (doesn't block UI)
+                    final_state = graph.get_state(config)
+                    if final_state:
+                        # Save memory for all interactions
+                        execution_result = final_state.values.get("execution_result", "")
+                        final_response = final_state.values.get("final_response", "")
+                        memory_text = f"User: {text_input}\n"
+                        if execution_result:
+                            memory_text += f"Assistant generated and executed code.\nResult: {execution_result}"
+                        else:
+                            memory_text += f"Assistant: {final_response}"
+                        
+                        asyncio.create_task(
+                            asyncio.to_thread(
+                                engine.memory.add,
+                                text=memory_text,
+                                user_id=session_id
+                            )
+                        )
+                        logger.info("Saving interaction to memory in background")
+                        
+                        # Save skill only if needed
+                        if skill_data and final_state.values.get("generated_code"):
+                            skill_data["code"] = final_state.values["generated_code"]
+                            asyncio.create_task(
+                                asyncio.to_thread(
+                                    engine.skills.save_skill,
+                                    name=skill_data["name"],
+                                    code=skill_data["code"],
+                                    description=skill_data["description"]
+                                )
+                            )
+                            logger.info(f"Saving skill '{skill_data['name']}' in background")
+                    
+                    # Only send done if we haven't already
+                    if not done_sent:
+                        logger.info("Sending final done event")
+                        await ws.send_text(json.dumps({"type": "done"}))
+                
+                elif audio_bytes:
+                    # TODO: Implement STT + engine workflow
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "error": "Audio input not yet implemented in code-first mode"
+                    }))
+                    
+            except Exception as e:
+                logger.error(f"[Engine] Error: {e}")
+                import traceback
+                traceback.print_exc()
+                await ws.send_text(json.dumps({
+                    "type": "error",
+                    "error": str(e)
+                }))                
     except WebSocketDisconnect:
             logger.info("[WS] Client disconnected")
     except Exception as e:
