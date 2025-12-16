@@ -50,6 +50,7 @@ async def build_context(engine, state) -> dict:
     """
     Node 2b: Builds the Context Sandwich for complex queries.
     Retrieves from memory (vector + graph) and adds directives.
+    Also includes recent conversation history for continuity.
     """
     logger.info("Building context sandwich")
     
@@ -58,13 +59,25 @@ async def build_context(engine, state) -> dict:
         user_id=state["user_id"]
     )
     
-    # Format context as text
+    # Format relevant history (vector search results)
     history_str = "\n".join(f"- {h}" for h in ctx_data.get("relevant_history", []))
-    context_str = f"RELEVANT PAST INTERACTIONS:\n{history_str}\n" if history_str else ""
+    
+    # Get recent conversation history for continuity
+    recent_history = ctx_data.get("recent_history", [])
+    recent_str = ""
+    if recent_history:
+        recent_str = "RECENT CONVERSATION:\n" + "\n".join(f"- {h}" for h in recent_history[-5:]) + "\n\n"
+    
+    # Combine contexts
+    context_str = ""
+    if recent_str:
+        context_str += recent_str
+    if history_str:
+        context_str += f"RELEVANT PAST CONTEXT:\n{history_str}\n"
     
     directives = ctx_data.get("user_directives", [])
     
-    logger.debug(f"Context: {len(ctx_data.get('relevant_history', []))} memories, {len(directives)} directives")
+    logger.debug(f"Context: {len(recent_history)} recent, {len(ctx_data.get('relevant_history', []))} relevant memories, {len(directives)} directives")
     
     return {
         "memory_context": context_str,

@@ -20,7 +20,7 @@ async def reason_and_code(engine, state) -> dict:
     logger.info("Entering THINK mode - generating code")
     
     # Search for multiple relevant skills (top 3)
-    relevant_skills = engine.skills.find_top_skills(state["user_input"], n=3, threshold=1.2)
+    relevant_skills = engine.skills.find_top_skills(state["user_input"], n=1, threshold=1.2)
     
     # Build skills section for prompt
     if relevant_skills:
@@ -51,6 +51,16 @@ async def reason_and_code(engine, state) -> dict:
         directives=state.get("global_directives", []),
         skills_section=skills_section
     )
+    
+    # Log context for debugging
+    memory_ctx = state.get('memory_context', '')
+    if memory_ctx:
+        logger.info(f"Memory context included ({len(memory_ctx)} chars):")
+        logger.info(f"{memory_ctx[:500]}...")
+    else:
+        logger.warning("No memory context in state!")
+    
+    logger.debug(f"Full prompt length: {len(prompt)} chars")
     
     system_msg = SystemMessage(content="You are Jarvis, an expert AI assistant with a Python sandbox and MCP tools for host access. Prefer Python sandbox for most tasks. Use MCP tools only when you need to access the host filesystem, run shell commands, or manage Docker containers.")
     user_msg = HumanMessage(content=prompt)

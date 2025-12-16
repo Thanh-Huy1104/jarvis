@@ -78,5 +78,11 @@ IMPORTANT: Only write Python code for sandbox execution. If the task requires ho
 (reading/writing host files, git operations, docker management), explicitly state that MCP tools 
 are needed and DO NOT generate Python code. Instead, describe what MCP tools should be used.
 
+IMPORTANT DECISION LOGIC:
+- If the user is asking for ANALYSIS or RECOMMENDATIONS based on data they already provided, respond conversationally WITHOUT code
+- If the user needs you to FETCH, CALCULATE, or GENERATE new data, then write Python code
+- Example (no code): "Based on your 12 cores and 32GB RAM, I recommend allocating 2-4 cores..."
+- Example (needs code): "Let me check your current system resources and recommend allocation..."
+
 Keep your response concise and user-friendly. Do NOT output your internal reasoning process.
 """

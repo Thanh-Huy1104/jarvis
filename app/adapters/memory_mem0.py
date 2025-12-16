@@ -28,10 +28,10 @@ class Mem0Adapter(MemoryPort):
             "llm": {
                 "provider": "openai",
                 "config": {
-                    "model": "Qwen/Qwen3-14B-AWQ",
+                    "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
                     "temperature": 0.0,  # Lower temperature for more deterministic memory decisions
-                    "max_tokens": 1000,
-                    "openai_base_url": "http://localhost:8000/v1",
+                    "max_tokens": 500,
+                    "openai_base_url": "http://localhost:8001/v1",
                     "api_key": "EMPTY"
                 }
             },
@@ -50,7 +50,7 @@ Extract factual information and save it in a clear, concise format.""",
                 "provider": "huggingface",
                 "config": {
                     "model": "multi-qa-MiniLM-L6-cos-v1",
-                    "model_kwargs": {"device": "cpu"}
+                    "model_kwargs": {"device": "cuda"}
                 }
             }
         }
@@ -119,18 +119,19 @@ Extract factual information and save it in a clear, concise format.""",
     def get_context(self, query: str, user_id: str) -> Dict[str, Any]:
         """
         Retrieves the 'Context Sandwich' for the Planner.
-        Combines vector similarity search with graph relationships.
+        Combines vector similarity search with graph relationships and recent history.
         
         Args:
             query: The current user query
             user_id: User identifier
             
         Returns:
-            Dictionary with relevant_history and user_directives
+            Dictionary with relevant_history, recent_history, and user_directives
         """
         if not self.client:
             return {
                 "relevant_history": [],
+                "recent_history": [],
                 "user_directives": self._get_hardcoded_directives()
             }
         
@@ -138,15 +139,35 @@ Extract factual information and save it in a clear, concise format.""",
             # 1. Search Vector (Similar past conversations)
             history = self.search(query, user_id=user_id, limit=5)
             
-            # 2. Search Graph (Entities & Relationships)
+            # 2. Get recent chronological history using get_all
+            # mem0 client.get_all returns all memories for a user
+            try:
+                all_memories_result = self.client.get_all(user_id=user_id)
+                # Handle both dict with 'results' key and direct list
+                if isinstance(all_memories_result, dict):
+                    all_memories = all_memories_result.get('results', [])
+                else:
+                    all_memories = list(all_memories_result) if all_memories_result else []
+                
+                # Sort by created_at and take last 10, then reverse for chronological order
+                recent = sorted(all_memories, key=lambda x: x.get('created_at', ''), reverse=True)[:10]
+                recent.reverse()  # Oldest first for conversation flow
+                logger.info(f"Retrieved {len(recent)} recent memories")
+            except Exception as e:
+                logger.warning(f"Could not fetch recent history: {e}")
+                recent = []
+            
+            # 3. Search Graph (Entities & Relationships)
             # Mem0 v1.1+ automatically includes relations in search results if graph is enabled
             # The graph store enriches the context with entity relationships
             
             return {
                 "relevant_history": [h.get('memory', h.get('text', '')) for h in history],
+                "recent_history": [r.get('memory', r.get('text', '')) for r in recent],
                 "user_directives": self._get_hardcoded_directives(),
                 "metadata": {
                     "context_count": len(history),
+                    "recent_count": len(recent),
                     "graph_enabled": True
                 }
             }
@@ -154,6 +175,7 @@ Extract factual information and save it in a clear, concise format.""",
             logger.error(f"Error getting context from memory: {e}")
             return {
                 "relevant_history": [],
+                "recent_history": [],
                 "user_directives": self._get_hardcoded_directives()
             }
 
