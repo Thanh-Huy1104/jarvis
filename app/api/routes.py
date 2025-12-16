@@ -95,6 +95,7 @@ async def ws_voice(ws: WebSocket):
                     skill_data = None  # Store skill data for async saving
                     current_node = None  # Track which node is executing
                     parallel_mode = False  # Track if we're in parallel execution
+                    synthesis_started = False  # Track if synthesis has been sent spacing
                     
                     # Stream the engine processing
                     async for event in graph.astream_events(
@@ -130,6 +131,14 @@ async def ws_voice(ws: WebSocket):
                             if current_node in ["parallel_planner", "aggregate_parallel_results"]:
                                 continue
                             
+                            # If this is the executor node streaming synthesis, send spacing first
+                            if current_node == "executor" and not synthesis_started:
+                                synthesis_started = True
+                                await ws.send_text(json.dumps({
+                                    "type": "token",
+                                    "text": "\n\n"
+                                }))
+                            
                             if chunk and hasattr(chunk, "content") and chunk.content:
                                 # Send all content including whitespace to preserve formatting
                                 content = str(chunk.content)
@@ -162,30 +171,23 @@ async def ws_voice(ws: WebSocket):
                             # Handle regular execution
                             if node_name == "executor" and not execution_result_sent:
                                 output = event.get("data", {}).get("output", {})
-                                execution_result = output.get("execution_result", "")
-                                if execution_result:
-                                    logger.info(f"Streaming execution result: {len(execution_result)} chars")
-                                    # Append the execution result as tokens
-                                    result_text = f"\n\n**Execution Result:**\n```\n{execution_result}\n```"
-                                    await ws.send_text(json.dumps({
-                                        "type": "token",
-                                        "text": result_text
-                                    }))
-                                    execution_result_sent = True
-                                    
-                                    # Capture skill data for async saving ONLY if code was executed successfully
-                                    # and it's not already approved (i.e., it's a new skill)
-                                    if not output.get("skill_approved", False) and execution_result:
-                                        skill_data = {
-                                            "name": output.get("pending_skill_name"),
-                                            "code": None,  # Will get from state
-                                            "description": text_input
-                                        }
-                                    
-                                    # Send done immediately after execution result
-                                    logger.info("Sending done event after execution")
-                                    await ws.send_text(json.dumps({"type": "done"}))
-                                    done_sent = True
+                                # Don't send execution_result - it's already included in the synthesized final_response
+                                # The final_response is streamed separately via on_chat_model_stream during synthesis
+                                execution_result_sent = True
+                                
+                                # Capture skill data for async saving ONLY if code was executed successfully
+                                # and it's not already approved (i.e., it's a new skill)
+                                if not output.get("skill_approved", False):
+                                    skill_data = {
+                                        "name": output.get("pending_skill_name"),
+                                        "code": None,  # Will get from state
+                                        "description": text_input
+                                    }
+                                
+                                # Send done immediately after execution
+                                logger.info("Sending done event after execution")
+                                await ws.send_text(json.dumps({"type": "done"}))
+                                done_sent = True
                             elif node_name == "parallel_executor" and not execution_result_sent:
                                 # Handle parallel execution results
                                 output = event.get("data", {}).get("output", {})

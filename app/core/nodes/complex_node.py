@@ -4,6 +4,7 @@ import logging
 import time
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from app.core.utils.code_extraction import extract_code, generate_skill_name
+from app.core.utils.code_transform import ensure_print_output
 
 logger = logging.getLogger(__name__)
 
@@ -101,12 +102,11 @@ CRITICAL CODE REQUIREMENTS:
 MATPlOTLIB PLOTS:
 - DO NOT use plt.show() - the sandbox is headless and cannot display plots
 - Instead, SAVE plots to /workspace/plot.png using plt.savefig('/workspace/plot.png')
-- After saving, print the message: "Plot saved to /workspace/plot.png"
+- The system will automatically detect and display the saved plot.
 - Example:
   plt.figure()
   plt.plot(data)
   plt.savefig('/workspace/plot.png')
-  print("Plot saved to /workspace/plot.png")
 
 IMPORTANT: Only write Python code for sandbox execution. If the task requires host system access 
 (reading/writing host files, git operations, docker management), explicitly state that MCP tools 
@@ -146,7 +146,7 @@ Keep your response concise and user-friendly. Do NOT output your internal reason
     }
 
 
-def execute_code(engine, state) -> dict:
+async def execute_code(engine, state) -> dict:
     """
     Node 4: Executes generated Python code in Docker sandbox.
     """
@@ -157,21 +157,72 @@ def execute_code(engine, state) -> dict:
         logger.info("No code to execute")
         return {"execution_result": "No code was generated."}
     
+    # # Auto-inject prints if code doesn't have them
+    # code = ensure_print_output(code)
+    
     logger.info(f"Executing code in sandbox ({len(code)} chars)")
     
     result = engine.sandbox.execute_with_packages(code)
     
     logger.info(f"Execution result: {result[:100]}...")
     
-    # Check if a plot was saved (indicated by message in output)
-    plot_detected = "plot saved to" in result.lower() or "plot.png" in result.lower()
+    # Check if plots were generated (base64 encoded in result)
+    plot_detected = "[PLOT:" in result and "data:image/png;base64," in result
     
     if plot_detected:
-        logger.info("📊 Plot file detected in execution output")
-        result += "\n\n💡 Note: Plot saved in sandbox. Use MCP tools or file transfer to retrieve it from the host."
+        logger.info("📊 Plot(s) detected and base64 encoded in output")
     
-    # Append execution result to response
-    updated_response = state.get("final_response", "") + f"\n\n**Execution Result:**\n\n{result}\n"
+    # Extract plot blocks for final response (keep full base64 for UI)
+    import re
+    plot_blocks = re.findall(r'\[PLOT:.*?\].*?\[/PLOT:.*?\]', result, re.DOTALL)
+    
+    # Strip base64 data from result for LLM synthesis (too large for context)
+    result_for_llm = re.sub(
+        r'data:image/png;base64,[A-Za-z0-9+/=]+',
+        'data:image/png;base64,[BASE64_DATA_REMOVED]',
+        result
+    )
+    
+    # Clean up "Plot saved to..." messages from output to prevent LLM hallucinations
+    result_for_llm = re.sub(r'Plot saved to /workspace/.*?\n?', '', result_for_llm)
+    
+    # Use SPEED LLM to synthesize a natural response from raw execution output
+    synthesis_prompt = f"""The user asked: {state['user_input']}
+
+Code was executed and produced this output:
+{result_for_llm}
+
+Create a clear, natural response that:
+1. Answers the user's question directly
+2. Presents the data in an easy-to-read format
+3. Highlights key findings or important information
+4. If there are plots, mention: "I've generated a visualization for you."
+5. Keep it concise but informative
+
+DO NOT include the raw code or technical details unless relevant.
+"""
+    
+    try:
+        synthesis_response = await engine.llm.run_agent_step(
+            messages=[HumanMessage(content=synthesis_prompt)],
+            system_persona="You are Jarvis. Present execution results in a clear, natural way. Be concise and user-friendly.",
+            tools=None,
+            mode="speed"
+        )
+        
+        synthesized_text = engine.llm.sanitize_thought_process(str(synthesis_response.content))
+        
+        # Combine synthesized text with plot blocks (plots come after)
+        updated_response = synthesized_text
+        if plot_detected and plot_blocks:
+            updated_response += "\n\n" + "\n\n".join(plot_blocks)
+        
+        logger.info("✓ Response synthesized with SPEED LLM")
+        
+    except Exception as e:
+        logger.error(f"Failed to synthesize response: {e}")
+        # Fallback to raw output
+        updated_response = state.get("final_response", "") + f"\n\n**Execution Result:**\n\n{result}\n"
     
     # Memory saving will be handled async in API layer
     
@@ -205,8 +256,8 @@ def execute_code(engine, state) -> dict:
     logger.info(f"⏱️  execute_code: {elapsed:.1f}ms")
     
     return {
-        "execution_result": result,
-        "final_response": updated_response,
+        "execution_result": result_for_llm,  # Pruned for memory (no base64)
+        "final_response": updated_response,  # Full with plots for UI
         "pending_skill_name": skill_name,
         "skill_approved": skip_approval
     }

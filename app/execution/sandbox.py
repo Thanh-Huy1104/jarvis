@@ -91,15 +91,31 @@ class DockerSandbox:
             except Exception as reconnect_error:
                 return f"Error: Cannot reconnect to container: {reconnect_error}. Run: docker compose up -d jarvis_sandbox"
 
-        # Wrap code to capture exceptions gracefully
-        wrapped_code = f"""
-import sys
+        # Wrap code to capture exceptions gracefully AND auto-print return values
+        # Using string concatenation to avoid f-string nesting issues
+        plot_handling = """
+    # Auto-encode matplotlib plots if they exist
+    plot_files = [f for f in os.listdir('/workspace') if f.endswith('.png') or f.endswith('.jpg')]
+    if plot_files:
+        for plot_file in plot_files:
+            plot_path = f"/workspace/{plot_file}"
+            print(f"Plot saved to /workspace/{plot_file}")
+            with open(plot_path, 'rb') as f:
+                plot_data = base64.b64encode(f.read()).decode('utf-8')
+                print(f"[PLOT:{plot_file}]data:image/png;base64,{plot_data}[/PLOT:{plot_file}]")
+            # Clean up plot file
+            os.remove(plot_path)
+"""
+        
+        wrapped_code = """import sys
 import traceback
+import os
+import base64
 
 try:
-{self._indent_code(code, spaces=4)}
+""" + self._indent_code(code, spaces=4) + plot_handling + """
 except Exception as e:
-    print(f"RUNTIME ERROR: {{type(e).__name__}}: {{e}}", file=sys.stderr)
+    print(f"RUNTIME ERROR: {type(e).__name__}: {e}", file=sys.stderr)
     traceback.print_exc()
 """
         
