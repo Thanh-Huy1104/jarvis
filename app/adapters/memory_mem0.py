@@ -29,12 +29,23 @@ class Mem0Adapter(MemoryPort):
                 "provider": "openai",
                 "config": {
                     "model": "Qwen/Qwen3-14B-AWQ",
-                    "temperature": 0.1,
+                    "temperature": 0.0,  # Lower temperature for more deterministic memory decisions
                     "max_tokens": 1000,
                     "openai_base_url": "http://localhost:8000/v1",
                     "api_key": "EMPTY"
                 }
             },
+            "version": "v1.1",  # Ensure we're using latest mem0 features
+            "custom_prompt": """You are a memory management system. Your job is to extract and store important information from conversations.
+
+ALWAYS save these types of information:
+- User's name, preferences, and personal details
+- Important facts about the user
+- User's goals, tasks, or requests
+- Technical details, configurations, or decisions made
+- Relationships between entities
+
+Extract factual information and save it in a clear, concise format.""",
             "embedder": {
                 "provider": "huggingface",
                 "config": {
@@ -57,7 +68,16 @@ class Mem0Adapter(MemoryPort):
         if not self.client:
             return
         try:
-            self.client.add(text, user_id=user_id, metadata=metadata or {})
+            result = self.client.add(text, user_id=user_id, metadata=metadata or {})
+            logger.info(f"Mem0 add result: {result}")
+            
+            # Check if memory was actually saved
+            if isinstance(result, dict):
+                event = result.get('event', 'UNKNOWN')
+                if event == 'NOOP':
+                    logger.warning(f"⚠️  Mem0 decided NOOP (not saved): {text[:100]}...")
+                elif event in ['ADD', 'UPDATE']:
+                    logger.info(f"✓ Memory {event}: {result.get('id', 'no-id')}")
         except Exception as e:
             logger.error(f"Error adding to Mem0: {e}")
 

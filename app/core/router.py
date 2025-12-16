@@ -68,11 +68,12 @@ SPEED:
 Examples: "hello", "my name is John", "thank you", "both of them please", "what does that mean"
 
 COMPLEX: 
-- Tasks requiring code execution, modifications to previous code, data analysis
+- Tasks requiring code execution, data fetching, web searches, news queries, analysis
 - Requests to change parameters, rerun simulations, generate new results
-Examples: "simulate 1000 coin flips", "now do 10 times only", "change the range to 50", "analyze this data"
+- Any request for financial news, stock data, web scraping, API calls, data analysis
+Examples: "simulate 1000 coin flips", "now do 10 times only", "change the range to 50", "financial news", "search for", "get data from", "analyze this"
 
-IMPORTANT: If user asks to modify numbers, parameters, or rerun with different settings, classify as COMPLEX.
+IMPORTANT: If user asks to fetch data, search web, get news, or modify numbers/parameters, classify as COMPLEX.
 
 User input: "{text}"
 

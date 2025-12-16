@@ -43,6 +43,8 @@ class AgentState(TypedDict):
     # Skill Management
     pending_skill_name: str
     skill_approved: bool
+    existing_skill_code: Optional[str]  # For deduplication
+    used_skill_names: Annotated[List[str], operator.add]  # Track skills used in this request
     
     # Final Output
     final_response: str
