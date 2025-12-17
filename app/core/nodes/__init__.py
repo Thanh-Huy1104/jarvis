@@ -2,7 +2,7 @@
 
 from .speed_node import speed_response, build_context
 from .complex_node import reason_and_code, execute_code, admin_approval
-from .mcp_node import call_mcp_tools
+from .iterative_node import iterative_research
 from .parallel_node import plan_parallel_tasks, execute_parallel_worker, aggregate_parallel_results
 
 __all__ = [
@@ -11,7 +11,7 @@ __all__ = [
     'reason_and_code',
     'execute_code',
     'admin_approval',
-    'call_mcp_tools',
+    'iterative_research',
     'plan_parallel_tasks',
     'execute_parallel_worker',
     'aggregate_parallel_results',

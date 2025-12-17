@@ -96,6 +96,7 @@ async def ws_voice(ws: WebSocket):
                     current_node = None  # Track which node is executing
                     parallel_mode = False  # Track if we're in parallel execution
                     synthesis_started = False  # Track if synthesis has been sent spacing
+                    send_code = False  # Flag to control code streaming (set to False to skip code)
                     
                     # Stream the engine processing
                     async for event in graph.astream_events(
@@ -129,6 +130,10 @@ async def ws_voice(ws: WebSocket):
                             
                             # Skip streaming from internal/backend nodes
                             if current_node in ["parallel_planner", "aggregate_parallel_results"]:
+                                continue
+                            
+                            # Skip code generation streaming if send_code is False
+                            if not send_code and current_node == "think_agent":
                                 continue
                             
                             # If this is the executor node streaming synthesis, send spacing first

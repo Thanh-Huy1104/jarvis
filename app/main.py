@@ -28,7 +28,6 @@ from phoenix.otel import register
 
 from app.api.routes import router
 from app.core.engine import JarvisEngine
-from app.core.state import InMemorySessionStore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -60,7 +59,6 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
 
     # 2. Setup Stores
-    app.state.session_store = InMemorySessionStore()
     app.state.audio_cache = {}
     
     # 3. Initialize JarvisEngine (Code-First Architecture)

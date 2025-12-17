@@ -15,7 +15,6 @@ from app.core import nodes
 from app.core.utils import cleanup_engine, log_timing_report
 from app.adapters.llm_vllm import VllmAdapter
 from app.adapters.memory_mem0 import Mem0Adapter
-from app.adapters.mcp_client import JarvisMCPClient
 from app.execution.sandbox import DockerSandbox
 
 logger = logging.getLogger(__name__)
@@ -39,11 +38,14 @@ class JarvisEngine:
         self.memory = Mem0Adapter()
         self.skills = SkillLibrary()
         self.sandbox = DockerSandbox()
-        self.mcp = JarvisMCPClient()
         
         # Runtime State
         self._task_callback = None
         self._timing = {}
+        
+        # Persistence (In-Memory Checkpointer)
+        # Must be initialized once to retain history across graph runs
+        self.checkpointer = MemorySaver()
         
         logger.info("JarvisEngine initialized with Modular Architecture")
 
@@ -86,25 +88,26 @@ class JarvisEngine:
         logger.info("→ Routing to SEQUENTIAL execution")
         return "think_agent"
 
-    def check_mcp_necessity(self, state: AgentState) -> Literal["mcp_tools", "executor"]:
+    def check_research_type(self, state: AgentState) -> Literal["iterative_research", "executor"]:
         """
-        Conditional Edge: Checks if the Think Agent requested MCP tools 
-        instead of Python code.
+        Conditional Edge: Checks if the task needs iterative research
+        (multi-step tool calls) or single code execution.
         """
-        # If the think agent generated code (non-empty), go to sandbox executor
+        # Check if task requires deep research (news, web search, analysis)
+        user_input = state.get("user_input", "").lower()
+        research_keywords = ["news", "search", "find information", "tell me about", "what is", "research"]
+        
+        if any(keyword in user_input for keyword in research_keywords):
+            logger.info("→ Routing to ITERATIVE RESEARCH (multi-step)")
+            return "iterative_research"
+        
+        # If code was generated, use single execution
         code = state.get("generated_code", "")
         if code and code.strip():
             logger.info("→ Routing to SANDBOX executor (code generated)")
             return "executor"
         
-        # If no code was generated, check if final_response mentions MCP/host access
-        final_response = state.get("final_response", "")
-        mcp_keywords = ["mcp tool", "host system", "filesystem", "shell command", "docker"]
-        if any(keyword in final_response.lower() for keyword in mcp_keywords):
-            logger.info("→ Routing to MCP tools (host access needed)")
-            return "mcp_tools"
-        
-        # Default to executor (even if no code, let it handle gracefully)
+        # Default to executor
         logger.info("→ Routing to SANDBOX executor (default)")
         return "executor"
 
@@ -132,7 +135,7 @@ class JarvisEngine:
         # 3a. Sequential Path (Think -> Execute) (async for think, sync for executor)
         workflow.add_node("think_agent", partial(nodes.reason_and_code, self))
         workflow.add_node("executor", partial(nodes.execute_code, self))
-        workflow.add_node("mcp_tools", partial(nodes.call_mcp_tools, self))
+        workflow.add_node("iterative_research", partial(nodes.iterative_research, self))
         
         # 3b. Parallel Path (Execute Workers & Aggregate) (async)
         # Note: aggregate_parallel_results handles the concurrent worker execution internally
@@ -169,19 +172,19 @@ class JarvisEngine:
             }
         )
         
-        # Sequential Path Logic: Think -> (Check MCP vs Sandbox) -> Execute
+        # Sequential Path Logic: Think -> (Check Research Type) -> Execute
         workflow.add_conditional_edges(
             "think_agent",
-            self.check_mcp_necessity,
+            self.check_research_type,
             {
                 "executor": "executor",
-                "mcp_tools": "mcp_tools"
+                "iterative_research": "iterative_research"
             }
         )
         
         # Execution Outcomes
         workflow.add_edge("executor", "admin_save")
-        workflow.add_edge("mcp_tools", END)
+        workflow.add_edge("iterative_research", "admin_save")
         workflow.add_edge("admin_save", END)
         
         # Parallel Outcome
@@ -190,9 +193,8 @@ class JarvisEngine:
         # Speed Outcome
         workflow.add_edge("speed_agent", END)
 
-        # Compile
-        memory = MemorySaver()
-        return workflow.compile(checkpointer=memory)
+        # Compile with persistent checkpointer
+        return workflow.compile(checkpointer=self.checkpointer)
 
     # =========================================================================
     # UTILITIES
@@ -200,7 +202,7 @@ class JarvisEngine:
 
     async def cleanup(self):
         """Cleanup resources."""
-        await cleanup_engine(self.mcp)
+        pass
     
     def report_timing(self):
         """Log execution timing and reset."""

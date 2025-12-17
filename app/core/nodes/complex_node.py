@@ -2,6 +2,7 @@
 
 import logging
 import time
+import datetime # Import datetime
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from app.core.utils.code_extraction import extract_code
 from app.core.utils.code_transform import ensure_print_output
@@ -20,7 +21,7 @@ async def reason_and_code(engine, state) -> dict:
     logger.info("Entering THINK mode - generating code")
     
     # Search for multiple relevant skills (top 3)
-    relevant_skills = engine.skills.find_top_skills(state["user_input"], n=1, threshold=1.2)
+    relevant_skills = engine.skills.find_top_skills(state["user_input"], n=3, threshold=1.2)
     
     # Build skills section for prompt
     if relevant_skills:
@@ -44,12 +45,30 @@ async def reason_and_code(engine, state) -> dict:
         used_skill_names = []
         logger.info("No relevant skills found in library")
     
+    # Format message history for context
+    messages = state.get("messages", [])
+    message_context = ""
+    if messages:
+        recent_messages = messages[-6:]  # Last 6 messages (3 exchanges)
+        formatted = []
+        for msg in recent_messages:
+            role = "User" if msg.type == "human" else "Assistant"
+            content = str(msg.content)[:200]  # Truncate long messages
+            formatted.append(f"{role}: {content}")
+        message_context = "\n\nRECENT CONVERSATION:\n" + "\n".join(formatted) + "\n"
+    
+    # Get current date
+    current_date = datetime.date.today().strftime("%B %d, %Y")
+    
     # Build enhanced prompt using template
+    memory_with_history = state.get('memory_context', '') + message_context
+    
     prompt = get_code_generation_prompt(
         user_input=state['user_input'],
-        memory_context=state.get('memory_context', ''),
+        memory_context=memory_with_history,
         directives=state.get("global_directives", []),
-        skills_section=skills_section
+        skills_section=skills_section,
+        current_date=current_date # Pass current date to the prompt
     )
     
     # Log context for debugging
@@ -62,14 +81,14 @@ async def reason_and_code(engine, state) -> dict:
     
     logger.debug(f"Full prompt length: {len(prompt)} chars")
     
-    system_msg = SystemMessage(content="You are Jarvis, an expert AI assistant with a Python sandbox and MCP tools for host access. Prefer Python sandbox for most tasks. Use MCP tools only when you need to access the host filesystem, run shell commands, or manage Docker containers.")
+    system_msg = SystemMessage(content="You are Jarvis, an expert AI assistant with a Python sandbox. You have access to web search (duckduckgo-search), web scraping (requests + BeautifulSoup), data analysis (pandas, numpy). Write clear, working Python code to accomplish tasks.")
     user_msg = HumanMessage(content=prompt)
     
     response = await engine.llm.run_agent_step(
         messages=[user_msg],
         system_persona=str(system_msg.content),
         tools=None,
-        mode="think"  # Use deep reasoning mode
+        mode="think"
     )
     
     # Sanitize thinking process (remove <think> tags if present)
@@ -113,25 +132,9 @@ async def execute_code(engine, state) -> dict:
     
     logger.info(f"Execution result: {result[:100]}...")
     
-    # Check if plots were generated (base64 encoded in result)
-    plot_detected = "[PLOT:" in result and "data:image/png;base64," in result
-    
-    if plot_detected:
-        logger.info("📊 Plot(s) detected and base64 encoded in output")
-    
-    # Extract plot blocks for final response (keep full base64 for UI)
-    import re
-    plot_blocks = re.findall(r'\[PLOT:.*?\].*?\[/PLOT:.*?\]', result, re.DOTALL)
-    
     # Strip base64 data from result for LLM synthesis (too large for context)
-    result_for_llm = re.sub(
-        r'data:image/png;base64,[A-Za-z0-9+/=]+',
-        'data:image/png;base64,[BASE64_DATA_REMOVED]',
-        result
-    )
-    
     # Clean up "Plot saved to..." messages from output to prevent LLM hallucinations
-    result_for_llm = re.sub(r'Plot saved to /workspace/.*?\n?', '', result_for_llm)
+    result_for_llm = result # No plots to remove
     
     # Use SPEED LLM to synthesize a natural response from raw execution output
     synthesis_prompt = get_synthesis_prompt(state['user_input'], result_for_llm)
@@ -146,10 +149,8 @@ async def execute_code(engine, state) -> dict:
         
         synthesized_text = engine.llm.sanitize_thought_process(str(synthesis_response.content))
         
-        # Combine synthesized text with plot blocks (plots come after)
+        # Combine synthesized text with plot blocks (plots come after) - now just synthesized text
         updated_response = synthesized_text
-        if plot_detected and plot_blocks:
-            updated_response += "\n\n" + "\n\n".join(plot_blocks)
         
         logger.info("✓ Response synthesized with SPEED LLM")
         
@@ -192,14 +193,14 @@ async def admin_approval(engine, state) -> dict:
     
     if not code:
         logger.info("No code to save as skill")
-        return {"skill_approved": True}
+        return {"skill_approved": False}
     
     # Check code similarity with existing skills
     if existing_skill:
         code_identical = existing_skill.strip() == code.strip()
         if code_identical:
             logger.info("✓ Skill has identical code to existing, skipping save")
-            return {"skill_approved": True}
+            return {"skill_approved": False}
     
     # Generate skill name using LLM for better naming
     async def generate_and_save_skill():
@@ -236,6 +237,7 @@ async def admin_approval(engine, state) -> dict:
             logger.error(f"Failed to save skill: {e}")
     
     # Run skill saving asynchronously (non-blocking)
-    asyncio.create_task(generate_and_save_skill())
+    # TODO: Undo this comment
+    # asyncio.create_task(generate_and_save_skill())
     
-    return {"skill_approved": True}
+    return {"skill_approved": False}

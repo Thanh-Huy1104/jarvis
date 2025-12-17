@@ -3,7 +3,6 @@ import operator
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from app.core.types import ChatMessage
-from app.domain.ports import SessionStorePort
 
 
 class SubTask(TypedDict):
@@ -18,6 +17,9 @@ class AgentState(TypedDict):
     """
     Enhanced state for the code-first Jarvis engine.
     Supports both speed mode (chat) and complex mode (planning + code execution).
+    
+    Note: 'messages' are persisted automatically by the LangGraph checkpointer.
+    Do not manually append history to input; use add_messages reducer.
     """
     # Legacy message-based state (for backward compatibility)
     messages: Annotated[List[AnyMessage], add_messages]
@@ -48,14 +50,5 @@ class AgentState(TypedDict):
     
     # Final Output
     final_response: str
-
-class InMemorySessionStore(SessionStorePort):
-    def __init__(self):
-        self._sessions: Dict[str, List[ChatMessage]] = {}
-
-    def get_recent(self, session_id: str, limit: int) -> List[ChatMessage]:
-        msgs = self._sessions.get(session_id, [])
-        return msgs[-limit:]
-
-    def append(self, session_id: str, msg: ChatMessage) -> None:
-        self._sessions.setdefault(session_id, []).append(msg)
+    
+    
