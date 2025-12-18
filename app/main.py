@@ -4,9 +4,31 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import warnings
 import logging
+import os
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Phoenix & OpenTelemetry Instrumentation
+from phoenix.otel import register
+from openinference.instrumentation.langchain import LangChainInstrumentor
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+# Configure Phoenix
+PHOENIX_HOST = os.getenv("PHOENIX_HOST", "localhost")
+PHOENIX_PORT = os.getenv("PHOENIX_PORT", "6006")
+PHOENIX_ENDPOINT = f"http://{PHOENIX_HOST}:{PHOENIX_PORT}/v1/traces"
+
+# Register the tracer provider with Phoenix
+tracer_provider = register(
+    project_name="jarvis-agent",
+    endpoint=PHOENIX_ENDPOINT,
+    batch=True,
+    verbose=False,
+)
+
+# Instrument LangChain
+LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
 
 # Configure logging level to show INFO logs
 logging.basicConfig(
@@ -17,6 +39,8 @@ logging.basicConfig(
 # Set specific loggers
 logging.getLogger("uvicorn").setLevel(logging.INFO)
 logging.getLogger("app").setLevel(logging.INFO)
+logging.getLogger("mem0").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Suppress deprecation warnings from dependencies
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="starlette.templating")
@@ -42,6 +66,9 @@ async def lifespan(app: FastAPI):
     print("[Main] Shutting down...")
 
 app = FastAPI(title="Jarvis Local", lifespan=lifespan)
+
+# Instrument FastAPI
+FastAPIInstrumentor.instrument_app(app, tracer_provider=tracer_provider, excluded_urls="/ws/voice")
 
 app.include_router(router)
 

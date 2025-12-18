@@ -41,6 +41,8 @@ class AgentState(TypedDict):
     # Code Execution
     generated_code: str
     execution_result: str
+    execution_error: Optional[str]  # Error traceback for self-correction
+    retry_count: int  # Number of self-correction attempts
     
     # Skill Management
     pending_skill_name: str

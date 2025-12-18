@@ -24,7 +24,6 @@ Requirements:
 
 Example format:
 - User requested CPU usage data; highest reading was 85%
-- Generated visualization saved to /workspace/plot.png
 - User prefers detailed explanations with code examples
 
 Provide ONLY the bullet points, no introduction or conclusion."""

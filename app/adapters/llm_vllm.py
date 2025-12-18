@@ -87,6 +87,7 @@ class VllmAdapter(LLMPromptPort):
 
         except Exception as e:
             logger.error(f"LLM Error: {e}")
+            logger.info("Stack trace for LLM Error:", exc_info=True)
             return AIMessage(content=f"Error generating response: {str(e)}")
 
     async def summarize(self, user_message: str, assistant_message: str) -> str:
@@ -107,6 +108,7 @@ class VllmAdapter(LLMPromptPort):
             return str(response.content)
         except Exception as e:
             logger.error(f"Summarization Error: {e}")
+            logger.info("Stack trace for Summarization Error:", exc_info=True)
             # Fallback to original format if summarization fails
             return f"User: {user_message}\nAssistant: {assistant_message}"
 

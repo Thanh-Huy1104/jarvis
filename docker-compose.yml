@@ -46,6 +46,17 @@ services:
       - jarvis_network
     restart: unless-stopped
 
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: phoenix
+    ports:
+      - "6006:6006"   # UI
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    networks:
+      - jarvis_network
+    restart: unless-stopped
+
 networks:
    jarvis_network:
     driver: bridge

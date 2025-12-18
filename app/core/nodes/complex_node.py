@@ -16,9 +16,15 @@ async def reason_and_code(engine, state) -> dict:
     """
     Node 3: Thinking mode - LLM plans and generates Python code.
     Checks skill library for relevant snippets first (supports multi-skill combination).
+    Supports self-correction: if retry_count > 0, includes error feedback in context.
     """
     start_time = time.time()
-    logger.info("Entering THINK mode - generating code")
+    retry_count = state.get("retry_count", 0)
+    
+    if retry_count > 0:
+        logger.info(f"🔄 SELF-CORRECTION mode - Retry attempt {retry_count}")
+    else:
+        logger.info("Entering THINK mode - generating code")
     
     # Search for multiple relevant skills (top 3)
     relevant_skills = engine.skills.find_top_skills(state["user_input"], n=3, threshold=1.2)
@@ -53,9 +59,13 @@ async def reason_and_code(engine, state) -> dict:
         formatted = []
         for msg in recent_messages:
             role = "User" if msg.type == "human" else "Assistant"
-            content = str(msg.content)[:200]  # Truncate long messages
+            content = str(msg.content)[:500]  # Increased to capture full errors
             formatted.append(f"{role}: {content}")
         message_context = "\n\nRECENT CONVERSATION:\n" + "\n".join(formatted) + "\n"
+        
+        # If this is a retry, emphasize the error context
+        if retry_count > 0:
+            message_context += "\n⚠️ IMPORTANT: The previous code attempt failed. Please analyze the error above and fix the issues.\n"
     
     # Get current date
     current_date = datetime.date.today().strftime("%B %d, %Y")
@@ -115,22 +125,52 @@ async def reason_and_code(engine, state) -> dict:
 async def execute_code(engine, state) -> dict:
     """
     Node 4: Executes generated Python code in Docker sandbox.
+    Implements self-correction: on error, adds traceback to messages and routes back to think_agent.
     """
     start_time = time.time()
     code = state.get("generated_code", "")
+    retry_count = state.get("retry_count", 0)
     
     if not code:
         logger.info("No code to execute")
-        return {"execution_result": "No code was generated."}
+        return {
+            "execution_result": "No code was generated.",
+            "execution_error": None,
+            "retry_count": retry_count
+        }
     
     # # Auto-inject prints if code doesn't have them
     # code = ensure_print_output(code)
     
-    logger.info(f"Executing code in sandbox ({len(code)} chars)")
+    logger.info(f"Executing code in sandbox ({len(code)} chars) - Attempt {retry_count + 1}")
     
     result = engine.sandbox.execute_with_packages(code)
     
     logger.info(f"Execution result: {result[:100]}...")
+    
+    # Check for execution errors (detect common error patterns)
+    error_indicators = ["Error:", "Traceback", "Exception:", "SyntaxError", "ImportError", "AttributeError", "KeyError", "ValueError", "TypeError"]
+    has_error = any(indicator in result for indicator in error_indicators)
+    
+    if has_error:
+        logger.warning(f"⚠️ Execution error detected - initiating self-correction loop")
+        
+        # Add error feedback to messages for next iteration
+        error_msg = AIMessage(content=f"Previous code execution failed with error:\n\n```\n{result}\n```\n\nPlease analyze the error and generate corrected code.")
+        
+        return {
+            "execution_result": result,
+            "execution_error": result,  # Store error for routing logic
+            "retry_count": retry_count + 1,
+            "messages": [error_msg],  # Add error feedback to conversation
+            "generated_code": code,
+            "existing_skill_code": state.get("existing_skill_code"),
+            "used_skill_names": state.get("used_skill_names", []),
+            "skill_approved": False
+        }
+    
+    # Success path: synthesize response
+    logger.info("✅ Execution succeeded")
     
     # Strip base64 data from result for LLM synthesis (too large for context)
     # Clean up "Plot saved to..." messages from output to prevent LLM hallucinations
@@ -170,6 +210,8 @@ async def execute_code(engine, state) -> dict:
     
     return {
         "execution_result": result_for_llm,  # Pruned for memory (no base64)
+        "execution_error": None,  # Clear error flag on success
+        "retry_count": retry_count,  # Maintain count but don't increment
         "final_response": updated_response,  # Full with plots for UI
         "generated_code": code,  # Pass code for skill saving
         "existing_skill_code": state.get("existing_skill_code"),

@@ -31,7 +31,7 @@ class JarvisEngine:
     5. Execution & Aggregation
     """
     
-    def __init__(self):
+    def __init__(self, callbacks=None):
         # Initialize Adapters
         self.router = JarvisRouter()
         self.llm = VllmAdapter()
@@ -40,7 +40,6 @@ class JarvisEngine:
         self.sandbox = DockerSandbox()
         
         # Runtime State
-        self._task_callback = None
         self._timing = {}
         
         # Persistence (In-Memory Checkpointer)
@@ -88,28 +87,27 @@ class JarvisEngine:
         logger.info("→ Routing to SEQUENTIAL execution")
         return "think_agent"
 
-    def check_research_type(self, state: AgentState) -> Literal["iterative_research", "executor"]:
+    def check_execution_result(self, state: AgentState) -> Literal["think_agent", "admin_save"]:
         """
-        Conditional Edge: Checks if the task needs iterative research
-        (multi-step tool calls) or single code execution.
+        Conditional Edge: Implements self-correction loop.
+        If execution failed, route back to think_agent with error feedback.
+        If succeeded, proceed to admin_save.
         """
-        # Check if task requires deep research (news, web search, analysis)
-        user_input = state.get("user_input", "").lower()
-        research_keywords = ["news", "search", "find information", "tell me about", "what is", "research"]
+        execution_error = state.get("execution_error")
+        retry_count = state.get("retry_count", 0)
+        max_retries = 3  # Prevent infinite loops
         
-        if any(keyword in user_input for keyword in research_keywords):
-            logger.info("→ Routing to ITERATIVE RESEARCH (multi-step)")
-            return "iterative_research"
+        if execution_error and retry_count < max_retries:
+            logger.warning(f"⚠️  Execution failed (attempt {retry_count + 1}/{max_retries}), routing back to think_agent")
+            logger.warning(f"Error: {execution_error[:200]}...")
+            return "think_agent"
         
-        # If code was generated, use single execution
-        code = state.get("generated_code", "")
-        if code and code.strip():
-            logger.info("→ Routing to SANDBOX executor (code generated)")
-            return "executor"
+        if retry_count >= max_retries:
+            logger.error(f"❌ Max retries ({max_retries}) reached, proceeding to admin_save")
+        else:
+            logger.info("✅ Execution succeeded, proceeding to admin_save")
         
-        # Default to executor
-        logger.info("→ Routing to SANDBOX executor (default)")
-        return "executor"
+        return "admin_save"
 
     # =========================================================================
     # GRAPH CONSTRUCTION
@@ -132,10 +130,9 @@ class JarvisEngine:
         workflow.add_node("context_builder", partial(nodes.build_context, self))
         workflow.add_node("parallel_planner", partial(nodes.plan_parallel_tasks, self))
         
-        # 3a. Sequential Path (Think -> Execute) (async for think, sync for executor)
+        # 3a. Sequential Path (Think -> Execute with Self-Correction Loop)
         workflow.add_node("think_agent", partial(nodes.reason_and_code, self))
         workflow.add_node("executor", partial(nodes.execute_code, self))
-        workflow.add_node("iterative_research", partial(nodes.iterative_research, self))
         
         # 3b. Parallel Path (Execute Workers & Aggregate) (async)
         # Note: aggregate_parallel_results handles the concurrent worker execution internally
@@ -172,19 +169,20 @@ class JarvisEngine:
             }
         )
         
-        # Sequential Path Logic: Think -> (Check Research Type) -> Execute
+        # Sequential Path Logic: Think -> Execute (with self-correction loop)
+        workflow.add_edge("think_agent", "executor")
+        
+        # Self-Correction Loop: Executor checks result and may loop back to Think
         workflow.add_conditional_edges(
-            "think_agent",
-            self.check_research_type,
+            "executor",
+            self.check_execution_result,
             {
-                "executor": "executor",
-                "iterative_research": "iterative_research"
+                "think_agent": "think_agent",  # Retry with error feedback
+                "admin_save": "admin_save"      # Success or max retries
             }
         )
         
-        # Execution Outcomes
-        workflow.add_edge("executor", "admin_save")
-        workflow.add_edge("iterative_research", "admin_save")
+        # Terminal nodes
         workflow.add_edge("admin_save", END)
         
         # Parallel Outcome

@@ -12,8 +12,7 @@ Create a clear, natural response that:
 1. Answers the user's question directly
 2. Presents the data in an easy-to-read format
 3. Highlights key findings or important information
-4. If there are plots, mention: "I've generated a visualization for you."
-5. Keep it concise but informative
+4. Keep it concise but informative
 
 DO NOT include the raw code or technical details unless relevant.
 """

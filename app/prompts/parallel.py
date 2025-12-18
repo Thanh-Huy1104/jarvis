@@ -7,7 +7,7 @@ def get_parallel_planning_prompt(user_input: str) -> str:
 
 Task: {user_input}
 
-If the task involves multiple INDEPENDENT operations that can run simultaneously (e.g., "fetch Bitcoin AND Ethereum prices", "generate 3 different charts"), break it into subtasks.
+If the task involves multiple INDEPENDENT operations that can run simultaneously (e.g., "fetch Bitcoin AND Ethereum prices", "search for info on 3 different topics"), break it into subtasks.
 
 If the task is sequential or single-operation, return a single task.
 
@@ -29,16 +29,11 @@ Task: {task_description}
 Hint: {code_hint}
 
 Available packages (pre-installed):
-- psutil, numpy, pandas, matplotlib, requests, httpx
+- psutil, numpy, pandas, requests, httpx
 - ddgs (use: from ddgs import DDGS), wikipedia, beautifulsoup4
 - boto3, google-api-python-client, psycopg2, pymongo
 
 CRITICAL: Use print() to display results - without print(), output is invisible!
 Example: result = function(); print(result)
-
-For matplotlib plots:
-- DO NOT use plt.show() (sandbox is headless)
-- SAVE to /workspace/plot_{task_id}.png using plt.savefig()
-- Print confirmation: "Plot saved to /workspace/plot_{task_id}.png"
 
 Import what you need and write the code. Respond with ONLY a Python code block, nothing else. No explanations."""

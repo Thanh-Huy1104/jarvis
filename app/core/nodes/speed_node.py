@@ -77,7 +77,7 @@ async def build_context(engine, state) -> dict:
     """
     logger.info("Building context sandwich")
     
-    ctx_data = engine.memory.get_context(
+    ctx_data = await engine.memory.get_context(
         query=state["user_input"], 
         user_id=state["user_id"]
     )

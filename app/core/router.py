@@ -11,7 +11,6 @@ from typing import Literal
 
 
 from langchain_openai import ChatOpenAI
-from langchain_community.chat_models import ChatOpenAI
 
 logger = logging.getLogger(__name__)
 

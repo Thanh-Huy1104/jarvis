@@ -9,7 +9,7 @@ venv/
 .venv/
 jarvis_data/
 neo4j/
-
+.env
 # Distribution / packaging
 .Python
 build/
