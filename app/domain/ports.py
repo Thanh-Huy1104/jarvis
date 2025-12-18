@@ -32,27 +32,12 @@ class TTSPort(ABC):
         """Async TTS with request queuing."""
         ...
 
-class ToolsPort(ABC):
-    @abstractmethod
-    async def list_tools(self) -> List[Dict[str, Any]]: ...
-    
-    @abstractmethod
-    async def call_tool(self, name: str, args: dict) -> str: ...
-    
-    async def connect(self) -> None:
-        """Optional: Connect to tool provider (e.g., MCP server)"""
-        pass
-    
-    async def cleanup(self) -> None:
-        """Optional: Cleanup tool provider resources"""
-        pass
-
 class MemoryPort(ABC):
     @abstractmethod
-    def add(self, text: str, user_id: str) -> None: ...
+    async def add(self, text: str, user_id: str) -> None: ...
     
     @abstractmethod
-    def search(self, query: str, user_id: str, limit: int = 5) -> List[str]: ...
+    async def search(self, query: str, user_id: str, limit: int = 5) -> List[str]: ...
 
 class LLMPromptPort(ABC):
     @abstractmethod

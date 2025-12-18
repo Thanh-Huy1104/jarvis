@@ -1,53 +1,46 @@
 # --- Core Orchestration & Graph ---
-langgraph
+langgraph>=0.2.0
 langgraph-checkpoint-sqlite
-langchain-core
-langchain-openai
-langchain-community
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-community>=0.3.0
+langchain-neo4j>=0.2.0
 aiosqlite
 
 # --- Web Server & API ---
-fastapi
+fastapi>=0.110.0
 uvicorn[standard]
 websockets
 python-multipart
 
 # --- AI & LLM Clients ---
-openai                  # Client for vLLM
-pydantic>=2.0
-pydantic-settings
+openai>=1.50.0          # Client for vLLM
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+httpx>=0.27.0           # Pinning this prevents the loop!
 
 # --- Observability (The "Eye") ---
-arize-phoenix           # Visual Dashboard
-openinference-instrumentation-langchain
+# openinference-instrumentation-langchain
 
 # --- Memory (The "Context") ---
-mem0ai                  # Main Mem0 wrapper
-qdrant-client           # Vector Database
-sentence-transformers   # Embeddings for Memory
-kuzu                    # Embedded Graph Database for Memory
-rank-bm25               # Required by Mem0 for Kuzu graph integration
-
-# --- Intent Routing (The "Brain") ---
-# Using 7B LLM for classification instead of semantic-router
+mem0ai>=0.1.20
+qdrant-client>=1.12.0
+sentence-transformers>=3.0.0
+# kuzu                  # Comment out if not strictly needed immediately
+rank-bm25
 
 # --- Skill Library (Code Storage) ---
-chromadb                # Semantic code snippet library
-
-# --- MCP Integration ---
-mcp                     # Model Context Protocol client
+chromadb>=0.5.5         # Semantic code snippet library
 
 # --- Tools & Sandbox (The "Body") ---
-docker                  # Python Docker SDK for Sandbox
-psutil                  # System Health Tool
+docker
+psutil
 
-# --- Audio: STT (Hearing) ---
+# --- Audio ---
 faster-whisper
-numpy<2.0.0
-
-# --- Audio: TTS (Speaking) ---
+numpy<2.0.0             # Critical: faster-whisper breaks on numpy 2.0
 kokoro-onnx
 soundfile
 
 # --- Utilities ---
-python-dotenv           # Environment variables
+python-dotenv

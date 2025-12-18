@@ -16,7 +16,7 @@ async def speed_response(engine, state) -> dict:
     logger.info("Taking SPEED path")
     
     # Retrieve memory context for conversation continuity
-    ctx_data = engine.memory.get_context(
+    ctx_data = await engine.memory.get_context(
         query=state["user_input"], 
         user_id=state["user_id"]
     )

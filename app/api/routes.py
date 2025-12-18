@@ -129,7 +129,7 @@ async def ws_voice(ws: WebSocket):
                                 continue
                             
                             # Skip streaming from internal/backend nodes
-                            if current_node in ["parallel_planner", "aggregate_parallel_results"]:
+                            if current_node in ["parallel_planner", "aggregate_parallel_results", "router"]:
                                 continue
                             
                             # Skip code generation streaming if send_code is False
@@ -244,8 +244,7 @@ async def ws_voice(ws: WebSocket):
                                 synthesized_memory = engine.llm.sanitize_thought_process(str(synthesis_response.content))
                                 
                                 # Save synthesized memory
-                                await asyncio.to_thread(
-                                    engine.memory.add,
+                                await engine.memory.add(
                                     text=synthesized_memory,
                                     user_id=session_id
                                 )

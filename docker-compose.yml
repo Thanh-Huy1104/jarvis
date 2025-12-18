@@ -1,0 +1,56 @@
+services:
+  jarvis_sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: jarvis-sandbox:latest
+    container_name: jarvis_sandbox
+    command: tail -f /dev/null
+    working_dir: /workspace
+    volumes:
+      - ./jarvis_data/workspace:/workspace
+      - ./jarvis_data/credentials:/workspace/credentials:ro
+    network_mode: bridge
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/workspace/credentials/google-calendar.json
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - DATABASE_URL=${DATABASE_URL:-}
+    mem_limit: 4g
+    cpus: 3.0
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - jarvis_network
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5
+    container_name: neo4j
+    ports:
+      - "7474:7474"   # browser
+      - "7687:7687"   # bolt
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-neo4j-password}
+    volumes:
+      - ./neo4j/data:/data
+      - ./neo4j/logs:/logs
+    networks:
+      - jarvis_network
+    restart: unless-stopped
+
+networks:
+   jarvis_network:
+    driver: bridge
+   
+volumes:
+  qdrant_storage:
+  neo4j_data:
+  neo4j_logs:

@@ -7,6 +7,8 @@ __pycache__/
 env/
 venv/
 .venv/
+jarvis_data/
+neo4j/
 
 # Distribution / packaging
 .Python

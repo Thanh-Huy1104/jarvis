@@ -1,7 +1,8 @@
 import logging
 import os
 from typing import Any, Dict, List, Optional
-from mem0 import Memory
+from mem0 import AsyncMemory
+from mem0.configs.base import MemoryConfig
 
 from app.domain.ports import MemoryPort
 
@@ -9,181 +10,120 @@ logger = logging.getLogger(__name__)
 
 class Mem0Adapter(MemoryPort):
     def __init__(self):
-        # Configuration for Local Execution (Free)
-        config = {
-            "vector_store": {
+        qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+        qdrant_port = os.getenv("QDRANT_PORT", "6333")
+        
+        neo4j_url = os.getenv("NEO4J_URL", "bolt://localhost:7687")
+        neo4j_user = os.getenv("NEO4J_USERNAME", "neo4j")
+        neo4j_pass = os.getenv("NEO4J_PASSWORD", "neo4j-password")
+        
+        custom_config = MemoryConfig(
+            vector_store={
                 "provider": "qdrant",
                 "config": {
-                    "embedding_model_dims": 384,
+                    "host": qdrant_host,
+                    "port": qdrant_port,
                     "collection_name": "eve_memories_fixed",
-                    "path": "./eve_memory_local", 
-                }
+                    "embedding_model_dims": 384,  # must match your embedder output dims
+                },
             },
-            "graph_store": {
-                "provider": "kuzu",  # Local embedded graph DB
+            graph_store={
+                "provider": "neo4j",
                 "config": {
-                    "db_path": "./db/kuzu_graph"
-                }
+                    "url": neo4j_url,
+                    "username": neo4j_user,
+                    "password": neo4j_pass,
+                    "database": "neo4j",
+                    # Optional: reduce noisy edges by raising extraction confidence threshold
+                    "threshold": 0.75,
+                },
             },
-            "llm": {
-                "provider": "openai",
+            llm={
+                # Option A (recommended): use Mem0's vLLM provider
+                # See vLLM provider params in Mem0 docs. :contentReference[oaicite:5]{index=5}
+                "provider": "vllm",
                 "config": {
                     "model": "Qwen/Qwen2.5-7B-Instruct-AWQ",
-                    "temperature": 0.0,  # Lower temperature for more deterministic memory decisions
+                    "vllm_base_url": os.getenv("VLLM_SPEED_BASE_URL", "http://localhost:8001/v1"),
+                    "api_key": os.getenv("VLLM_API_KEY", "vllm-api-key"),
+                    "temperature": 0.0,
                     "max_tokens": 500,
-                    "openai_base_url": "http://localhost:8001/v1",
-                    "api_key": "EMPTY"
-                }
+                },
             },
-            "version": "v1.1",  # Ensure we're using latest mem0 features
-            "custom_prompt": """You are a memory management system. Your job is to extract and store important information from conversations.
-
-ALWAYS save these types of information:
-- User's name, preferences, and personal details
-- Important facts about the user
-- User's goals, tasks, or requests
-- Technical details, configurations, or decisions made
-- Relationships between entities
-
-Extract factual information and save it in a clear, concise format.""",
-            "embedder": {
+            embedder={
                 "provider": "huggingface",
                 "config": {
                     "model": "multi-qa-MiniLM-L6-cos-v1",
-                    "model_kwargs": {"device": "cuda"}
-                }
-            }
-        }
+                    "model_kwargs": {"device": "cuda"},
+                },
+            },
+            custom_prompt=(
+                "You are a memory management system. Your job is to extract and store "
+                "important information from conversations.\n\n"
+                "ALWAYS save these types of information:\n"
+                "- User's name, preferences, and personal details\n"
+                "- Important facts about the user\n"
+                "- User's goals, tasks, or requests\n"
+                "- Technical details, configurations, or decisions made\n"
+                "- Relationships between entities\n\n"
+                "Extract factual information and save it in a clear, concise format."
+            )
+        )
+        
 
         try:
-            logger.info("Initializing Mem0 with local configuration (Qdrant + vLLM + HF)...")
-            self.client = Memory.from_config(config)
+            self.client = AsyncMemory(config=custom_config)
             logger.info("Mem0 initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to initialize Mem0 client: {e}")
             self.client = None
 
-    def add(self, text: str, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def add(self, text: str, user_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Stores interaction in both Vector and Graph stores"""
         if not self.client:
             return
         try:
-            result = self.client.add(text, user_id=user_id, metadata=metadata or {})
+            result = await self.client.add(text, user_id=user_id, metadata=metadata or {})
             logger.info(f"Mem0 add result: {result}")
             
             # Check if memory was actually saved
             if isinstance(result, dict):
                 event = result.get('event', 'UNKNOWN')
                 if event == 'NOOP':
-                    logger.warning(f"⚠️  Mem0 decided NOOP (not saved): {text[:100]}...")
+                    logger.warning(f"Mem0 decided NOOP (not saved): {text[:100]}...")
                 elif event in ['ADD', 'UPDATE']:
                     logger.info(f"✓ Memory {event}: {result.get('id', 'no-id')}")
         except Exception as e:
             logger.error(f"Error adding to Mem0: {e}")
 
-    def search(self, query: str, user_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    async def search(self, query: str, user_id: str, limit: int = 5) -> List[Dict[str, Any]]:
         if not self.client:
             return []
-        try:
-            results = self.client.search(query, user_id=user_id, limit=limit)
+        res = await self.client.search(query=query, user_id=user_id, limit=limit)
+        results = res.get("results", []) if isinstance(res, dict) else []
+        return results
 
-            # If we don't do this, iterating over 'results' just gives us the key strings ("results")
-            if isinstance(results, dict):
-                results = results.get("results", [])
-            
-            normalized = []
-            for r in results:
-                if isinstance(r, dict):
-                    normalized.append(r)
-                elif isinstance(r, str):
-                    normalized.append({"memory": r, "text": r, "score": 1.0})
-                else:
-                    # Handle objects (like Pydantic models)
-                    try:
-                        if hasattr(r, "model_dump"):
-                            normalized.append(r.model_dump())
-                        elif hasattr(r, "to_dict"):
-                             normalized.append(r.to_dict())
-                        else:
-                             val = str(r)
-                             normalized.append({"memory": val, "text": val, "score": 1.0})
-                    except Exception:
-                        val = str(r)
-                        normalized.append({"memory": val, "text": val, "score": 1.0})
-                    
-            return normalized
-        except Exception as e:
-            logger.error(f"Error searching Mem0: {e}")
-            return []
+    async def get_context(self, query: str, user_id: str) -> Dict[str, Any]:
+        history = await self.search(query, user_id=user_id, limit=5)
+        if self.client:
+            all_memories = await self.client.get_all(user_id=user_id)
+            recent = (all_memories.get("results", []) if isinstance(all_memories, dict) else all_memories) or []
+            recent = sorted(recent, key=lambda x: x.get("created_at", ""), reverse=True)[:10][::-1]
+        else:
+            recent = []
 
-    def get_context(self, query: str, user_id: str) -> Dict[str, Any]:
-        """
-        Retrieves the 'Context Sandwich' for the Planner.
-        Combines vector similarity search with graph relationships and recent history.
-        
-        Args:
-            query: The current user query
-            user_id: User identifier
-            
-        Returns:
-            Dictionary with relevant_history, recent_history, and user_directives
-        """
-        if not self.client:
-            return {
-                "relevant_history": [],
-                "recent_history": [],
-                "user_directives": self._get_hardcoded_directives()
-            }
-        
-        try:
-            # 1. Search Vector (Similar past conversations)
-            history = self.search(query, user_id=user_id, limit=5)
-            
-            # 2. Get recent chronological history using get_all
-            # mem0 client.get_all returns all memories for a user
-            try:
-                all_memories_result = self.client.get_all(user_id=user_id)
-                # Handle both dict with 'results' key and direct list
-                if isinstance(all_memories_result, dict):
-                    all_memories = all_memories_result.get('results', [])
-                else:
-                    all_memories = list(all_memories_result) if all_memories_result else []
-                
-                # Sort by created_at and take last 10, then reverse for chronological order
-                recent = sorted(all_memories, key=lambda x: x.get('created_at', ''), reverse=True)[:10]
-                recent.reverse()  # Oldest first for conversation flow
-                logger.info(f"Retrieved {len(recent)} recent memories")
-            except Exception as e:
-                logger.warning(f"Could not fetch recent history: {e}")
-                recent = []
-            
-            # 3. Search Graph (Entities & Relationships)
-            # Mem0 v1.1+ automatically includes relations in search results if graph is enabled
-            # The graph store enriches the context with entity relationships
-            
-            return {
-                "relevant_history": [h.get('memory', h.get('text', '')) for h in history],
-                "recent_history": [r.get('memory', r.get('text', '')) for r in recent],
-                "user_directives": self._get_hardcoded_directives(),
-                "metadata": {
-                    "context_count": len(history),
-                    "recent_count": len(recent),
-                    "graph_enabled": True
-                }
-            }
-        except Exception as e:
-            logger.error(f"Error getting context from memory: {e}")
-            return {
-                "relevant_history": [],
-                "recent_history": [],
-                "user_directives": self._get_hardcoded_directives()
-            }
+        return {
+            "relevant_history": [h.get("memory", h.get("text", "")) for h in history],
+            "recent_history": [r.get("memory", r.get("text", "")) for r in recent],
+            "user_directives": self._get_hardcoded_directives(),
+            "metadata": {
+                "context_count": len(history),
+                "recent_count": len(recent),
+                "graph_enabled": True,
+            },
+        }
 
     def _get_hardcoded_directives(self) -> List[str]:
-        """
-        These act as the 'Constitution' - core behavioral rules.
-        These directives are always included in the context.
-        """
         return [
             "Always output Python code for complex tasks.",
             "Do not delete files outside /workspace.",
