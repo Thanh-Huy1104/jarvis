@@ -7,8 +7,6 @@ Executes Python code in an isolated Docker container for security.
 import docker
 import logging
 import time
-import os
-import re
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +19,9 @@ class DockerSandbox:
     
     def __init__(self, container_name="jarvis_sandbox"):
         self.container_name = container_name
-        self.client = docker.from_env()
         
         try:
+            self.client = docker.from_env()
             self.container = self.client.containers.get(container_name)
             if self.container.status != "running":
                 logger.warning(f"Container '{container_name}' status: {self.container.status}. Attempting to restart...")
@@ -234,6 +232,7 @@ except Exception as e:
             'playwright': 'playwright',
             'psutil': 'psutil',
             'yaml': 'pyyaml',
+            'yfinance': 'yfinance',
         }
         
         # Install common scientific packages if detected

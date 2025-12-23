@@ -47,7 +47,10 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="starlette
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain_community.chat_models.openai")
 
 from app.api.routes import router
+from app.api.skills_routes import router as skills_router
 from app.core.engine import JarvisEngine
+from app.core.skills_engine import SkillsEngine
+from app.adapters.stt_whisper import FasterWhisperAdapter
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -58,6 +61,22 @@ async def lifespan(app: FastAPI):
     # 3. Initialize JarvisEngine (Code-First Architecture)
     app.state.engine = JarvisEngine()
     print("[Main] JarvisEngine initialized with code-first workflow")
+    
+    # 4. Initialize SkillsEngine (Verification Loop)
+    app.state.skills_engine = SkillsEngine(
+        llm=app.state.engine.llm,
+        skills=app.state.engine.skills,
+        sandbox=app.state.engine.sandbox
+    )
+    print("[Main] SkillsEngine initialized")
+    
+    # 5. Initialize STT (Speech-to-Text)
+    try:
+        app.state.stt = FasterWhisperAdapter()
+        print("[Main] STT Adapter initialized (Faster Whisper)")
+    except Exception as e:
+        print(f"[Main] Failed to initialize STT: {e}")
+        app.state.stt = None
     
     print("[Main] Jarvis is ready.")
     
@@ -71,6 +90,7 @@ app = FastAPI(title="Jarvis Local", lifespan=lifespan)
 FastAPIInstrumentor.instrument_app(app, tracer_provider=tracer_provider, excluded_urls="/ws/voice")
 
 app.include_router(router)
+app.include_router(skills_router)
 
 app.add_middleware(
     CORSMiddleware,

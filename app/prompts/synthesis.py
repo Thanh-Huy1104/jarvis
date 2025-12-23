@@ -20,24 +20,19 @@ DO NOT include the raw code or technical details unless relevant.
 
 def get_parallel_synthesis_prompt(user_input: str, results_context: str) -> str:
     """Generate prompt for synthesizing parallel execution results"""
-    return f"""You executed multiple tasks in parallel. Analyze the results and provide a clear, insightful summary.
+    return f"""You executed multiple tasks in parallel. Analyze the ACTUAL results below.
 
 {results_context}
 
-Provide a natural response that:
-1. Acknowledges what was done in parallel
-2. For EACH task, show the code that was generated and its output
-3. Highlight interesting findings or patterns in the results
-4. Answer the user's original question directly
+Instructions:
+1. Report ONLY what is shown in the "Result" sections above.
+2. If a task failed or produced an error, state that it failed. DO NOT invent data.
+3. If the result is an error message, report the error.
+4. Compare the findings if relevant (e.g., "Apple is higher than Bitcoin").
 
-Format each task's output like this:
-**Task: [description]**
-```python
-[the actual code]
-```
-**Output:**
-```
-[the result]
-```
+Format:
+- Summarize the successful findings.
+- Mention any failures clearly.
+- Answer the user's original question based on the REAL data.
 
-Be concise but informative. Show all code blocks and results."""
+CRITICAL: Do not hallucinate numbers or APIs. If the code didn't work, say so."""

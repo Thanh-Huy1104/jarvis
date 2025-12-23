@@ -33,10 +33,10 @@ class AgentState(TypedDict):
     
     # Context (The Sandwich)
     memory_context: str
-    global_directives: Annotated[List[str], operator.add]
+    global_directives: List[str]
     
     # Planning (for complex tasks)
-    plan: Annotated[List[SubTask], operator.add]
+    plan: List[SubTask]
     
     # Code Execution
     generated_code: str
@@ -48,7 +48,7 @@ class AgentState(TypedDict):
     pending_skill_name: str
     skill_approved: bool
     existing_skill_code: Optional[str]  # For deduplication
-    used_skill_names: Annotated[List[str], operator.add]  # Track skills used in this request
+    used_skill_names: List[str]  # Track skills used in this request
     
     # Final Output
     final_response: str

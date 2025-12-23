@@ -180,15 +180,6 @@ async def ws_voice(ws: WebSocket):
                                 # The final_response is streamed separately via on_chat_model_stream during synthesis
                                 execution_result_sent = True
                                 
-                                # Capture skill data for async saving ONLY if code was executed successfully
-                                # and it's not already approved (i.e., it's a new skill)
-                                if not output.get("skill_approved", False):
-                                    skill_data = {
-                                        "name": output.get("pending_skill_name"),
-                                        "code": None,  # Will get from state
-                                        "description": text_input
-                                    }
-                                
                                 # Send done immediately after execution
                                 logger.info("Sending done event after execution")
                                 await ws.send_text(json.dumps({"type": "done"}))
@@ -254,19 +245,6 @@ async def ws_voice(ws: WebSocket):
                                 logger.error(f"Failed to synthesize/save memory: {e}")
                         
                         asyncio.create_task(save_synthesized_memory())
-                        
-                        # Save skill only if needed
-                        if skill_data and final_state.values.get("generated_code"):
-                            skill_data["code"] = final_state.values["generated_code"]
-                            asyncio.create_task(
-                                asyncio.to_thread(
-                                    engine.skills.save_skill,
-                                    name=skill_data["name"],
-                                    code=skill_data["code"],
-                                    description=skill_data["description"]
-                                )
-                            )
-                            logger.info(f"Saving skill '{skill_data['name']}' in background")
                     
                     # Only send done if we haven't already
                     if not done_sent:
@@ -274,11 +252,44 @@ async def ws_voice(ws: WebSocket):
                         await ws.send_text(json.dumps({"type": "done"}))
                 
                 elif audio_bytes:
-                    # TODO: Implement STT + engine workflow
-                    await ws.send_text(json.dumps({
-                        "type": "error",
-                        "error": "Audio input not yet implemented in code-first mode"
-                    }))
+                    stt = ws.app.state.stt
+                    if not stt:
+                        await ws.send_text(json.dumps({
+                            "type": "error", 
+                            "error": "STT not initialized on server"
+                        }))
+                        continue
+                    
+                    try:
+                        # Send status update
+                        await ws.send_text(json.dumps({
+                            "type": "status",
+                            "status": "transcribing"
+                        }))
+                        
+                        # Transcribe
+                        text_input = await stt.transcribe_async(audio_bytes)
+                        
+                        if text_input:
+                            logger.info(f"[STT] Transcribed: {text_input}")
+                            # Send transcription back to UI
+                            await ws.send_text(json.dumps({
+                                "type": "transcription", 
+                                "text": text_input
+                            }))
+                            break # Proceed to engine execution
+                        else:
+                            await ws.send_text(json.dumps({
+                                "type": "error",
+                                "error": "No speech detected"
+                            }))
+                    
+                    except Exception as e:
+                        logger.error(f"[STT] Error: {e}")
+                        await ws.send_text(json.dumps({
+                            "type": "error",
+                            "error": f"Transcription failed: {str(e)}"
+                        }))
                     
             except Exception as e:
                 logger.error(f"[Engine] Error: {e}")

@@ -27,7 +27,7 @@ async def reason_and_code(engine, state) -> dict:
         logger.info("Entering THINK mode - generating code")
     
     # Search for multiple relevant skills (top 3)
-    relevant_skills = engine.skills.find_top_skills(state["user_input"], n=3, threshold=1.2)
+    relevant_skills = engine.skills.find_top_skills(state["user_input"], n=3, threshold=1.5)
     
     # Build skills section for prompt
     if relevant_skills:
@@ -156,7 +156,7 @@ async def execute_code(engine, state) -> dict:
         logger.warning(f"⚠️ Execution error detected - initiating self-correction loop")
         
         # Add error feedback to messages for next iteration
-        error_msg = AIMessage(content=f"Previous code execution failed with error:\n\n```\n{result}\n```\n\nPlease analyze the error and generate corrected code.")
+        error_msg = AIMessage(content=f"Previous code execution failed. \n\nCODE THAT FAILED:\n```python\n{code}\n```\n\nERROR:\n```\n{result}\n```\n\nPlease analyze the error and generate corrected code.")
         
         return {
             "execution_result": result,
@@ -265,21 +265,21 @@ async def admin_approval(engine, state) -> dict:
                 logger.info(f"✓ Skill '{skill_name}' found in used_skill_names, skipping save")
                 return
             
-            logger.info(f"Saving skill with LLM-generated name: '{skill_name}'")
+            logger.info(f"Adding skill to PENDING queue: '{skill_name}'")
             
-            engine.skills.save_skill(
+            # Save to Pending Queue instead of direct library
+            engine.skills.pending.add_pending_skill(
                 name=skill_name,
                 code=code,
                 description=state["user_input"]
             )
             
-            logger.info(f"✓ Skill '{skill_name}' saved successfully")
+            logger.info(f"✓ Skill '{skill_name}' added to pending queue")
             
         except Exception as e:
             logger.error(f"Failed to save skill: {e}")
     
     # Run skill saving asynchronously (non-blocking)
-    # TODO: Undo this comment
-    # asyncio.create_task(generate_and_save_skill())
+    asyncio.create_task(generate_and_save_skill())
     
     return {"skill_approved": False}

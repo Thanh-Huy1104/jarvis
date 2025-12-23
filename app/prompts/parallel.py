@@ -21,19 +21,23 @@ Respond ONLY with valid JSON, no explanations:
 }}"""
 
 
-def get_parallel_worker_prompt(task_description: str, code_hint: str, task_id: str) -> str:
+def get_parallel_worker_prompt(task_description: str, code_hint: str, task_id: str, skills_section: str = "") -> str:
     """Generate prompt for parallel worker task execution"""
+    skills_text = ""
+    if skills_section:
+        skills_text = f"\nRELEVANT SKILLS FROM LIBRARY:\n{skills_section}\n"
+
     return f"""Write ONLY the Python code for this task:
 
 Task: {task_description}
 Hint: {code_hint}
-
-Available packages (pre-installed):
-- psutil, numpy, pandas, requests, httpx
-- ddgs (use: from ddgs import DDGS), wikipedia, beautifulsoup4
-- boto3, google-api-python-client, psycopg2, pymongo
+{skills_text}
+Available packages:
+- Standard libraries + common packages (pandas, requests, etc.)
+- Missing packages will be AUTO-INSTALLED based on imports
 
 CRITICAL: Use print() to display results - without print(), output is invisible!
 Example: result = function(); print(result)
 
-Import what you need and write the code. Respond with ONLY a Python code block, nothing else. No explanations."""
+Import what you need and write the code. You can use/modify the reference skills if they are helpful.
+Respond with ONLY a Python code block, nothing else. No explanations."""

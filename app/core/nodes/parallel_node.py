@@ -4,7 +4,7 @@ import json
 import re
 import logging
 import asyncio
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from app.core.state import SubTask
 from app.core.utils.code_extraction import extract_code
 from app.prompts.parallel import get_parallel_planning_prompt, get_parallel_worker_prompt
@@ -69,96 +69,103 @@ async def plan_parallel_tasks(engine, state) -> dict:
 
 async def execute_parallel_worker(engine, state, task: SubTask, status_callback=None) -> dict:
     """
-    Executes a single subtask in parallel.
-    This is called multiple times simultaneously.
-    Docker exec_run handles concurrent executions safely.
+    Executes a single subtask in parallel with skill awareness and self-correction.
     """
     logger.info("="*60)
     logger.info(f"WORKER STARTED: [{task['id']}]")
     logger.info(f"Description: {task['description']}")
-    logger.info(f"Has callback: {status_callback is not None}")
     logger.info("="*60)
     
-    # Send task started status update
     if status_callback:
-        logger.info(f"Sending 'running' status for [{task['id']}]")
         await status_callback(task['id'], 'running')
-    else:
-        logger.warning(f"No status callback available for [{task['id']}]")
-    
-    # Generate code for this specific subtask
-    prompt = get_parallel_worker_prompt(
-        task_description=task['description'],
-        code_hint=task.get('code_hint', 'Write clean Python code'),
-        task_id=task['id']
-    )
-    
-    response = await engine.llm.run_agent_step(
-        messages=[HumanMessage(content=prompt)],
-        system_persona="You are a code generator with access to a Python sandbox. Output ONLY Python code in markdown blocks. No explanations, no thinking process. All common packages are pre-installed. ALWAYS use print() to display results.",
-        tools=None,
-        mode="think"
-    )
-    
-    # Sanitize thinking tags first, then extract code
-    clean_content = engine.llm.sanitize_thought_process(str(response.content))
-    logger.info(f"[{task['id']}] LLM response length: {len(str(response.content))} chars")
-    logger.info(f"[{task['id']}] Clean content preview: {clean_content[:200]}...")
-    
-    code = extract_code(clean_content, engine.llm)
-    
-    if not code:
-        logger.error(f"[{task['id']}] ❌ FAILED: No code could be extracted")
-        logger.error(f"[{task['id']}] Full clean content: {clean_content}")
-        if status_callback:
-            logger.info(f"Sending 'failed' status for [{task['id']}]")
-            await status_callback(task['id'], 'failed')
-        return {
-            "id": task["id"],
-            "status": "failed",
-            "result": "Failed to generate code",
-            "code": ""
-        }
-    
-    logger.info(f"[{task['id']}] ✓ Code extracted: {len(code)} chars")
-    logger.info(f"[{task['id']}] Code preview:\n{code[:300]}...")
-    
-    try:
-        # Execute in sandbox with automatic package installation
-        logger.info(f"[{task['id']}] Starting sandbox execution with package detection...")
-        loop = asyncio.get_event_loop()
+
+    # 1. Find relevant skills for this specific subtask
+    relevant_skills = engine.skills.find_top_skills(task['description'], n=2, threshold=1.5)
+    skills_section = ""
+    if relevant_skills:
+        logger.info(f"[{task['id']}] Found {len(relevant_skills)} relevant skills")
+        for i, skill in enumerate(relevant_skills, 1):
+            skills_section += f"\n--- Skill {i}: {skill['name']} ---\n"
+            skills_section += f"```python\n{skill['code']}\n```\n"
+
+    retry_count = 0
+    max_retries = 1
+    current_error = None
+    messages = []
+
+    while retry_count <= max_retries:
+        if retry_count > 0:
+            logger.info(f"[{task['id']}] 🔄 RETRYING worker task (attempt {retry_count}/{max_retries})")
+            # Add error feedback to messages
+            messages.append(AIMessage(content=f"Previous code execution failed with error:\n\n```\n{current_error}\n```\n\nPlease fix the issue."))
         
-        result = await loop.run_in_executor(None, engine.sandbox.execute_with_packages, code)
+        # 2. Generate Prompt
+        prompt = get_parallel_worker_prompt(
+            task_description=task['description'],
+            code_hint=task.get('code_hint', 'Write clean Python code'),
+            task_id=task['id'],
+            skills_section=skills_section
+        )
         
-        logger.info(f"[{task['id']}] ✓ EXECUTION COMPLETE")
-        logger.info(f"[{task['id']}] Result length: {len(result)} chars")
-        logger.info(f"[{task['id']}] Result preview:\n{result[:500]}...")
+        # 3. Generate Code
+        messages.append(HumanMessage(content=prompt))
         
-        # Send task completed status update
-        if status_callback:
-            logger.info(f"Sending 'complete' status for [{task['id']}]")
-            await status_callback(task['id'], 'complete')
-        else:
-            logger.warning(f"[{task['id']}] No callback to send 'complete' status")
+        response = await engine.llm.run_agent_step(
+            messages=messages,
+            system_persona="You are a code generator. Output ONLY Python code in markdown blocks. No explanations. Use print() to display results.",
+            tools=None,
+            mode="think"
+        )
         
-        return {
-            "id": task["id"],
-            "status": "complete",
-            "result": result,
-            "code": code
-        }
-    except Exception as e:
-        logger.error(f"[{task['id']}] ❌ EXECUTION ERROR: {type(e).__name__}: {e}")
-        logger.error(f"[{task['id']}] Traceback:", exc_info=True)
-        if status_callback:
-            logger.info(f"Sending 'failed' status for [{task['id']}]")
-            await status_callback(task['id'], 'failed')
-        return {
-            "id": task["id"],
-            "status": "failed",
-            "result": f"Execution error: {str(e)}",
-            "code": code
-        }
+        clean_content = engine.llm.sanitize_thought_process(str(response.content))
+        code = extract_code(clean_content, engine.llm)
+        
+        if not code:
+            error_msg = f"Failed to extract code from: {clean_content[:100]}..."
+            if retry_count < max_retries:
+                current_error = error_msg
+                retry_count += 1
+                continue
+            return {"id": task["id"], "status": "failed", "result": error_msg, "code": ""}
+
+        # 4. Execute Code
+        try:
+            logger.info(f"[{task['id']}] Executing code (attempt {retry_count + 1})")
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, engine.sandbox.execute_with_packages, code)
+            
+            # 5. Detect Errors in Result (even if exit code was 0)
+            error_indicators = ["Error:", "Traceback", "Exception:", "SyntaxError", "ImportError"]
+            has_error = any(indicator in result for indicator in error_indicators)
+            
+            if has_error:
+                logger.warning(f"[{task['id']}] ⚠️ Execution error detected in output")
+                if retry_count < max_retries:
+                    current_error = result
+                    retry_count += 1
+                    continue
+                # If we've exhausted retries, return as failed
+                if status_callback:
+                    await status_callback(task['id'], 'failed')
+                return {"id": task["id"], "status": "failed", "result": result, "code": code}
+
+            # Success!
+            logger.info(f"[{task['id']}] ✓ Worker task complete")
+            if status_callback:
+                await status_callback(task['id'], 'complete')
+            return {"id": task["id"], "status": "complete", "result": result, "code": code}
+
+        except Exception as e:
+            logger.error(f"[{task['id']}] ❌ Critical execution error: {e}")
+            if retry_count < max_retries:
+                current_error = str(e)
+                retry_count += 1
+                continue
+            if status_callback:
+                await status_callback(task['id'], 'failed')
+            return {"id": task["id"], "status": "failed", "result": str(e), "code": code}
+
+    return {"id": task["id"], "status": "failed", "result": "Max retries exceeded", "code": ""}
 
 
 async def aggregate_parallel_results(engine, state) -> dict:
@@ -208,10 +215,14 @@ async def aggregate_parallel_results(engine, state) -> dict:
     results_context = f"Original request: {state['user_input']}\n\n"
     results_context += f"Executed {len(successful_tasks)}/{len(plan)} tasks successfully:\n\n"
     
+    # Check if user explicitly asked for code
+    include_code = any(kw in state['user_input'].lower() for kw in ["code", "show code", "how you did it", "debug", "python"])
+    
     for i, result in enumerate(successful_tasks, 1):
         task_desc = next((t['description'] for t in plan if t['id'] == result['id']), result['id'])
         results_context += f"Task {i}: {task_desc}\n"
-        results_context += f"Code:\n```python\n{result.get('code', '')}\n```\n"
+        if include_code:
+            results_context += f"Code:\n```python\n{result.get('code', '')}\n```\n"
         results_context += f"Result:\n{result.get('result', '')}\n\n"
     
     if failed_tasks:
