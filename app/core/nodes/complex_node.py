@@ -40,7 +40,13 @@ async def reason_and_code(engine, state) -> dict:
         skills_section = "\n\nRELEVANT SKILLS FROM LIBRARY (combine/modify as needed):\n"
         for i, skill in enumerate(relevant_skills, 1):
             skills_section += f"\n--- Skill {i}: {skill['name']} (similarity: {1 - float(skill['distance']):.2f}) ---\n"
-            skills_section += f"```python\n{skill['code']}\n```\n"
+            # In rich skill format, 'description' contains the full markdown (including code).
+            # If it's a legacy skill, it might be short, so we fallback to code block.
+            full_docs = skill.get('description', '')
+            if "```python" in full_docs:
+                skills_section += f"{full_docs}\n"
+            else:
+                skills_section += f"{full_docs}\n\n```python\n{skill['code']}\n```\n"
         
         # Store first skill code and all skill names for deduplication
         existing_skill_code = relevant_skills[0]['code']

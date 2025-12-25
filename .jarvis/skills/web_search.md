@@ -1,6 +1,31 @@
-# Web Search with DuckDuckGo
+---
+name: web-search
+description: Search the web using DuckDuckGo to find articles, documentation, or general information.
+version: 1.0.0
+tools: [python]
+dependencies: [ddgs]
+---
 
-Search the web using DuckDuckGo. Get search results with titles, URLs, and snippets for any query.
+# Web Search
+
+## Description
+Performs a general web search using DuckDuckGo. Returns a list of results with titles, URLs, and text snippets. This is the primary tool for finding information on the internet.
+
+## When to Use
+- When the user asks a question requiring external knowledge.
+- When finding documentation, tutorials, or facts.
+- Example queries: "Search for Python tutorials", "Who won the super bowl?", "Find documentation for FastAPI".
+
+## How to Use
+Call `search_web(query, max_results=5)`.
+
+```python
+results = search_web('Python programming tutorials')
+print(results)
+```
+
+## Dependencies
+- `ddgs`: DuckDuckGo Search library.
 
 ## Code
 
@@ -36,13 +61,10 @@ def search_web(query, max_results=5):
         error_msg = f'Error searching web: {str(e)}'
         print(error_msg)
         return error_msg
-
-# Example usage
-result = search_web('Python programming tutorials')
 ```
 
-## Usage Examples
+## Troubleshooting
+- **No Results**: Broaden search terms.
+- **Rate Limits**: If searching too frequently, DDG might block the request temporarily.
 
-- Search for programming tutorials
-- Find documentation or articles
-- Research any topic on the web
+```

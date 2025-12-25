@@ -1,6 +1,31 @@
-# News Search with DuckDuckGo
+---
+name: news-search
+description: Search for recent news articles using DuckDuckGo.
+version: 1.0.0
+tools: [python]
+dependencies: [ddgs]
+---
 
-Search for recent news articles using DuckDuckGo. Get news about companies, topics, or events with titles, sources, URLs and excerpts.
+# News Search
+
+## Description
+This skill performs a news-specific search using DuckDuckGo. It returns a formatted list of recent articles including titles, sources, URLs, and excerpts. Useful for catching up on current events, company news, or specific topics.
+
+## When to Use
+- When the user asks for "news about X".
+- When checking recent developments for a company or topic.
+- Example queries: "Latest news on OpenAI", "What's happening in tech today?".
+
+## How to Use
+Call `search_news(query, region='us', max_results=10)`.
+
+```python
+# Get 5 recent news items about Bloomberg
+news = search_news('Bloomberg', max_results=5)
+```
+
+## Dependencies
+- `ddgs`: DuckDuckGo Search library.
 
 ## Code
 
@@ -41,13 +66,10 @@ def search_news(query, region='us', max_results=10):
         error_msg = f'Error searching news: {str(e)}'
         print(error_msg)
         return error_msg
-
-# Example usage
-result = search_news('Bloomberg', max_results=5)
 ```
 
-## Usage Examples
+## Troubleshooting
+- **No Results**: Try removing specific keywords or changing the region.
+- **Rate Limits**: Excessive searching might trigger DDG rate limits.
 
-- Get latest news about a company (e.g., "Bloomberg recent developments")
-- Search for current events or breaking news
-- Find news in specific regions
+```

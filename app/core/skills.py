@@ -16,6 +16,7 @@ import json
 import uuid
 import time
 import os
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,13 @@ class SkillLibrary:
         """
         self.pending = PendingSkillManager()
         
+        # Resolve skills_dir path
+        self.skills_dir = Path(skills_dir)
+        if not self.skills_dir.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent.parent
+            self.skills_dir = project_root / skills_dir
+        self.skills_dir = self.skills_dir.expanduser()
+        
         try:
             self.client = chromadb.PersistentClient(path=db_path)
             
@@ -164,36 +172,17 @@ class SkillLibrary:
             logger.info(f"SkillLibrary initialized with {self.collection.count()} skills")
             
             # Load skills from markdown files
-            self._load_skills_from_markdown(skills_dir)
+            self._load_skills_from_markdown(self.skills_dir)
             
         except Exception as e:
             logger.error(f"Failed to initialize SkillLibrary: {e}")
             self.collection = None
     
-    def _load_skills_from_markdown(self, skills_dir: str):
+    def _load_skills_from_markdown(self, skills_path: Path):
         """
         Load skills from markdown files in the skills directory.
-        
-        Markdown format:
-        # Skill Title
-        
-        Description of the skill.
-        
-        ## Code
-        
-        ```python
-        code here
-        ```
+        Supports both simple format and rich format with YAML frontmatter.
         """
-        # Support both absolute and relative paths
-        skills_path = Path(skills_dir)
-        if not skills_path.is_absolute():
-            # Relative to project root (where app/ folder is)
-            project_root = Path(__file__).resolve().parent.parent.parent
-            skills_path = project_root / skills_dir
-        
-        skills_path = skills_path.expanduser()
-        
         if not skills_path.exists():
             logger.warning(f"Skills directory not found: {skills_path}")
             return
@@ -205,42 +194,89 @@ class SkillLibrary:
             try:
                 content = md_file.read_text()
                 
-                # Extract title (first # heading)
-                title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
-                title = title_match.group(1) if title_match else md_file.stem
+                # Check for YAML frontmatter
+                frontmatter_match = re.match(r'^---\n(.*?)\n---\n', content, re.DOTALL)
                 
-                # Extract description (text before ## Code)
-                desc_match = re.search(r'^#\s+.+?\n\n(.+?)(?=\n##|\Z)', content, re.DOTALL | re.MULTILINE)
-                description = desc_match.group(1).strip() if desc_match else title
+                name = md_file.stem
+                description = ""
+                code = ""
                 
-                # Extract code from ```python code blocks
-                code_match = re.search(r'```python\n(.+?)\n```', content, re.DOTALL)
-                if not code_match:
-                    logger.warning(f"No Python code block found in {md_file.name}")
+                if frontmatter_match:
+                    # Rich Format
+                    try:
+                        metadata = yaml.safe_load(frontmatter_match.group(1))
+                        name = metadata.get("name", md_file.stem)
+                        # Use the whole file content as description for semantic search context
+                        # or specifically the description field + usage
+                        description = metadata.get("description", "")
+                        
+                        # Extract code block (assume python for now)
+                        # We look for the first python block
+                        code_match = re.search(r'```python\n(.+?)\n```', content, re.DOTALL)
+                        if code_match:
+                            code = code_match.group(1)
+                        else:
+                            # Maybe it's bash or text instructions?
+                            # For now, if no python code, we skip indexing as "executable skill" 
+                            # or index it differently.
+                            # But legacy logic requires 'code'.
+                            logger.debug(f"Rich skill {name} has no python block, checking for others...")
+                            # Fallback to store empty code if it's just instructions
+                            code = ""
+                            
+                        # Use full content as the document for retrieval to capture "How to use"
+                        description = content
+                            
+                    except yaml.YAMLError as e:
+                        logger.error(f"Error parsing YAML in {md_file.name}: {e}")
+                        continue
+                else:
+                    # Legacy Format
+                    # Extract title (first # heading)
+                    title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+                    if title_match:
+                        # Normalize title to kebab-case for ID if needed, but stick to filename for ID
+                        pass
+                    
+                    # Extract description (text before ## Code)
+                    desc_match = re.search(r'^#\s+.+?\n\n(.+?)(?=\n##|\Z)', content, re.DOTALL | re.MULTILINE)
+                    description = desc_match.group(1).strip() if desc_match else name
+                    
+                    # Extract code from ```python code blocks
+                    code_match = re.search(r'```python\n(.+?)\n```', content, re.DOTALL)
+                    if code_match:
+                        code = code_match.group(1)
+                
+                if not code:
+                    # Warn but maybe still load if it's documentation-only?
+                    # Current executor needs code.
+                    logger.warning(f"No code found in {md_file.name}, skipping execution indexing")
                     continue
                 
-                code = code_match.group(1)
-                
-                # Use filename (without .md) as skill ID
-                skill_id = md_file.stem
-                
-                # Save to ChromaDB
-                self.save_skill(skill_id, code, description)
-                logger.info(f"Loaded skill '{skill_id}' from {md_file.name}")
+                # Save to ChromaDB (Metadata Only)
+                # We don't write back to file here, just update DB
+                self._upsert_to_db(name, code, description)
+                logger.info(f"Loaded skill '{name}' from {md_file.name}")
                 
             except Exception as e:
                 logger.error(f"Error loading skill from {md_file.name}: {e}")
 
+    def _upsert_to_db(self, name: str, code: str, description: str):
+        """Helper to push to ChromaDB."""
+        if not self.collection:
+            return
+        self.collection.upsert(
+            ids=[name],
+            documents=[description],
+            metadatas=[{
+                "code": code,
+                "name": name
+            }]
+        )
+
     def find_skill(self, query: str, threshold: float = 1.2) -> Optional[str]:
         """
         Finds the most relevant Python code snippet based on the task description.
-        
-        Args:
-            query: Task description (e.g., "read a CSV file and calculate statistics")
-            threshold: Distance threshold (lower = stricter, < 1.0 = very similar)
-            
-        Returns:
-            Python code string if found, None otherwise
         """
         if not self.collection:
             return None
@@ -251,7 +287,6 @@ class SkillLibrary:
                 n_results=1
             )
             
-            # Check if we have results and distance is below threshold
             if (results['ids'] and 
                 results['distances'] and 
                 results['distances'][0] and 
@@ -272,17 +307,7 @@ class SkillLibrary:
             return None
 
     def find_top_skills(self, query: str, n: int = 3, threshold: float = 1.5) -> List[Dict[str, str]]:
-        """
-        Finds multiple relevant skills.
-        
-        Args:
-            query: Task description
-            n: Number of results to return
-            threshold: Maximum distance threshold
-            
-        Returns:
-            List of dicts with 'name', 'code', 'description', 'distance'
-        """
+        """Finds multiple relevant skills."""
         if not self.collection:
             return []
         
@@ -310,32 +335,37 @@ class SkillLibrary:
             logger.error(f"Error searching skills: {e}")
             return []
 
-    def save_skill(self, name: str, code: str, description: str) -> bool:
+    def save_skill(self, name: str, code: str, description: str, full_content: str = None) -> bool:
         """
-        Saves or updates a code snippet in the library.
+        Saves a skill to the filesystem and updates the library.
         
         Args:
-            name: Unique identifier for the skill
-            code: Python code to store
-            description: Natural language description (used for semantic search)
-            
-        Returns:
-            True if successful, False otherwise
+            name: Unique identifier for the skill (used for filename)
+            code: Python code to store (extracted)
+            description: Natural language description
+            full_content: Complete markdown content (optional). If None, generated from legacy format.
         """
         if not self.collection:
             logger.error("Cannot save skill: collection not initialized")
             return False
         
         try:
-            self.collection.upsert(
-                ids=[name],
-                documents=[description],  # This is what we search against
-                metadatas=[{
-                    "code": code,
-                    "name": name
-                }]
-            )
-            logger.info(f"Saved skill: {name}")
+            # 1. Update DB
+            self._upsert_to_db(name, code, description if full_content is None else full_content)
+            
+            # 2. Write to Filesystem
+            self.skills_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self.skills_dir / f"{name}.md"
+            
+            if full_content:
+                # Use provided rich content
+                file_path.write_text(full_content)
+            else:
+                # Generate Legacy Format if no full content provided
+                legacy_content = f"# {name}\n\n{description}\n\n## Code\n\n```python\n{code}\n```\n"
+                file_path.write_text(legacy_content)
+            
+            logger.info(f"Saved skill file: {file_path}")
             return True
             
         except Exception as e:
@@ -343,20 +373,19 @@ class SkillLibrary:
             return False
 
     def delete_skill(self, name: str) -> bool:
-        """
-        Removes a skill from the library.
-        
-        Args:
-            name: Skill identifier
-            
-        Returns:
-            True if deleted, False otherwise
-        """
+        """Removes a skill from the library and filesystem."""
         if not self.collection:
             return False
         
         try:
+            # Delete from DB
             self.collection.delete(ids=[name])
+            
+            # Delete from Filesystem
+            file_path = self.skills_dir / f"{name}.md"
+            if file_path.exists():
+                file_path.unlink()
+                
             logger.info(f"Deleted skill: {name}")
             return True
         except Exception as e:
@@ -364,12 +393,7 @@ class SkillLibrary:
             return False
 
     def list_all_skills(self) -> List[Dict[str, str]]:
-        """
-        Returns all skills in the library.
-        
-        Returns:
-            List of dicts with 'name', 'code', 'description'
-        """
+        """Returns all skills in the library."""
         if not self.collection:
             return []
         
@@ -391,12 +415,7 @@ class SkillLibrary:
             return []
 
     def get_stats(self) -> Dict[str, int]:
-        """
-        Returns statistics about the skill library.
-        
-        Returns:
-            Dict with 'total_skills' count
-        """
+        """Returns statistics about the skill library."""
         if not self.collection:
             return {"total_skills": 0}
         

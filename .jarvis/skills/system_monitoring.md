@@ -1,6 +1,32 @@
-# System Monitoring with psutil
+---
+name: system-monitoring
+description: Monitor system resources including CPU, GPU, memory, disk usage, and running processes.
+version: 1.0.0
+tools: [python]
+dependencies: [psutil]
+---
 
-Monitor system resources including CPU, GPU, memory, disk usage, and running processes.
+# System Monitoring
+
+## Description
+Provides a comprehensive snapshot of the current system state, including CPU usage, Memory consumption, Disk space, and GPU stats (via `nvidia-smi` if available).
+
+## When to Use
+- When the user asks "How is my system doing?" or "Check system resources".
+- Before running heavy tasks to ensure sufficient resources.
+- To debug performance issues.
+
+## How to Use
+Call `get_system_info()`. No arguments required.
+
+```python
+stats = get_system_info()
+print(stats)
+```
+
+## Dependencies
+- `psutil`: For CPU/RAM/Disk metrics.
+- `nvidia-smi`: (External CLI) Required for GPU metrics.
 
 ## Code
 
@@ -77,9 +103,6 @@ if __name__ == "__main__":
     print(get_system_info())
 ```
 
-## Usage Examples
-
-- Check system resource usage
-- Monitor CPU and memory
-- Check disk space availability
-- Monitor GPU utilisation and total memory
+## Troubleshooting
+- **GPU Info Missing**: Ensure NVIDIA drivers are installed and `nvidia-smi` is in the system PATH.
+- **Permission Denied**: Some system metrics might require elevated privileges (rare for basic stats).

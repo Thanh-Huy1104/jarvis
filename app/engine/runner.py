@@ -3,6 +3,7 @@ import asyncio
 from app.core.events import PipelineEvent, PipelineStage, EventType
 from app.core.bus import EventBus
 from app.core.skills_engine import SkillsEngine
+from app.core.nodes.documentation_node import generate_skill_documentation
 from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
@@ -141,18 +142,36 @@ class JobRunner:
                      notes=f"Verification Failed: {error_details[:500]}..."
                  )
             else:
-                # Success
+                # Success - GENERATE DOCUMENTATION
                 await self.bus.publish(PipelineEvent(
                     job_id=job_id,
                     stage=PipelineStage.COMPLETED,
                     type=EventType.STEP_START,
-                    content="Verification passed. Saving to library..."
+                    content="Generating rich skill documentation..."
                 ))
                 
+                doc_state = {
+                    "generated_code": final_code,
+                    "user_input": instruction
+                }
+                
+                # Generate SKILL.md content
+                doc_result = await generate_skill_documentation(self.engine, doc_state)
+                full_content = doc_result.get("skill_documentation")
+                
+                await self.bus.publish(PipelineEvent(
+                    job_id=job_id,
+                    stage=PipelineStage.COMPLETED,
+                    type=EventType.STEP_COMPLETE,
+                    content="Documentation generated. Saving to library..."
+                ))
+                
+                # Save with rich content
                 success = self.engine.skills.save_skill(
                     name=skill_name,
                     code=final_code,
-                    description=instruction
+                    description=instruction,
+                    full_content=full_content
                 )
                 
                 if success:
