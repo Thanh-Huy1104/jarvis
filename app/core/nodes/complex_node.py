@@ -166,7 +166,6 @@ async def execute_code(engine, state) -> dict:
             "generated_code": code,
             "existing_skill_code": state.get("existing_skill_code"),
             "used_skill_names": state.get("used_skill_names", []),
-            "skill_approved": False
         }
     
     # Success path: synthesize response
@@ -216,14 +215,13 @@ async def execute_code(engine, state) -> dict:
         "generated_code": code,  # Pass code for skill saving
         "existing_skill_code": state.get("existing_skill_code"),
         "used_skill_names": state.get("used_skill_names", []),
-        "skill_approved": False  # Will be evaluated in admin_approval
     }
 
 
-async def admin_approval(engine, state) -> dict:
+async def propose_pending_skill(engine, state):
     """
-    Node 5: Admin checkpoint for saving skills using LLM-generated names.
-    Handles skill deduplication and async saving.
+    Node 5: Proposes a new skill to the pending queue for later verification.
+    Handles skill deduplication and LLM-based naming.
     """
     import asyncio
     from app.prompts.skill_naming import get_skill_naming_prompt
@@ -235,14 +233,14 @@ async def admin_approval(engine, state) -> dict:
     
     if not code:
         logger.info("No code to save as skill")
-        return {"skill_approved": False}
+        return
     
     # Check code similarity with existing skills
     if existing_skill:
         code_identical = existing_skill.strip() == code.strip()
         if code_identical:
             logger.info("✓ Skill has identical code to existing, skipping save")
-            return {"skill_approved": False}
+            return
     
     # Generate skill name using LLM for better naming
     async def generate_and_save_skill():
@@ -282,4 +280,3 @@ async def admin_approval(engine, state) -> dict:
     # Run skill saving asynchronously (non-blocking)
     asyncio.create_task(generate_and_save_skill())
     
-    return {"skill_approved": False}

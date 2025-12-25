@@ -1,17 +1,8 @@
-"""Engine lifecycle utilities - cleanup and timing"""
+"""Engine lifecycle utilities - timing"""
 
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-async def cleanup_engine(mcp_client):
-    """Cleanup MCP connections and resources"""
-    logger.info("Cleaning up JarvisEngine resources")
-    try:
-        await mcp_client.cleanup()
-    except Exception as e:
-        logger.error(f"Error during MCP cleanup: {e}")
 
 
 def log_timing_report(timing_dict: dict):

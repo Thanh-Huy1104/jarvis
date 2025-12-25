@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 import warnings
 import logging
 import os
+from app.db.session import init_db
+from app.adapters.chat_postgres import ChatPostgresAdapter
 
 # Load environment variables from .env file
 load_dotenv()
@@ -51,6 +53,8 @@ from app.api.skills_routes import router as skills_router
 from app.core.engine import JarvisEngine
 from app.core.skills_engine import SkillsEngine
 from app.adapters.stt_whisper import FasterWhisperAdapter
+from app.core.bus import EventBus
+from app.engine.runner import JobRunner
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,7 +74,17 @@ async def lifespan(app: FastAPI):
     )
     print("[Main] SkillsEngine initialized")
     
-    # 5. Initialize STT (Speech-to-Text)
+    # 5. Initialize Event System
+    app.state.event_bus = EventBus()
+    app.state.job_runner = JobRunner(app.state.skills_engine, app.state.event_bus)
+    print("[Main] EventBus and JobRunner initialized")
+    
+    # 5. Initialize Database
+    await init_db()
+    
+    app.state.chat_history = ChatPostgresAdapter()
+    
+    # 6. Initialize STT (Speech-to-Text)
     try:
         app.state.stt = FasterWhisperAdapter()
         print("[Main] STT Adapter initialized (Faster Whisper)")

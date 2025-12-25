@@ -188,6 +188,91 @@ except Exception as e:
             logger.error(f"Error installing package {package}: {e}")
             return f"Error installing package: {e}"
     
+    def execute_test(self, code: str, test_code: str) -> dict:
+        """
+        Executes code and its tests in the sandbox.
+        Writes code to 'skill.py' and test_code to 'test_skill.py', then runs pytest.
+        
+        Args:
+            code: The implementation code
+            test_code: The pytest code
+            
+        Returns:
+            Dict with "success", "output" (stdout/stderr combined)
+        """
+        if not self.container:
+            return {"success": False, "output": "Error: Sandbox not connected."}
+            
+        import base64
+        
+        try:
+            # Helper to write file via base64 to avoid quoting issues
+            def write_file(filename, content):
+                b64 = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+                cmd = f"bash -c 'echo {b64} | base64 -d > {filename}'"
+                return self.container.exec_run(cmd, workdir="/workspace")
+
+            # Write files
+            write_file("skill.py", code)
+            write_file("test_skill.py", test_code)
+            
+            # Run pytest
+            # -v: verbose
+            # -p no:cacheprovider: don't write .pytest_cache
+            result = self.container.exec_run(
+                cmd=["pytest", "-v", "-p", "no:cacheprovider", "test_skill.py"],
+                workdir="/workspace",
+                demux=True
+            )
+            
+            stdout = result.output[0].decode("utf-8") if result.output[0] else ""
+            stderr = result.output[1].decode("utf-8") if result.output[1] else ""
+            output = stdout + "\n" + stderr
+            
+            return {
+                "success": result.exit_code == 0,
+                "output": output.strip()
+            }
+            
+        except Exception as e:
+            logger.error(f"Sandbox execution error: {e}")
+            return {"success": False, "output": f"System Error: {str(e)}"}
+        
+    def execute_lint(self, code: str) -> dict:
+        """
+        Executes linting on provided code using ruff
+        """
+        if not self.container:
+            return {"success": False, "output": "Error: Sandbox not connected."}
+        
+        import base64
+        try:
+            def write_file(filename, content):
+                b64 = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+                cmd = f"bash -c 'echo {b64} | base64 -d > {filename}'"
+                return self.container.exec_run(cmd, workdir="/workspace")
+            
+            write_file("skill.py", code)
+            
+            result = self.container.exec_run(
+                cmd=["ruff", "skill.py"],
+                workdir="/workspace",
+                demux=True
+            )
+            
+            stdout = result.output[0].decode("utf-8") if result.output[0] else ""
+            stderr = result.output[1].decode("utf-8") if result.output[1] else ""
+            output = stdout + "\n" + stderr
+            
+            return {
+                "success": result.exit_code == 0,
+                "output": output.strip()
+            }
+            
+        except Exception as e:
+            logger.error(f"Sandbox linting error: {e}")
+            return {"success": False, "output": f"System Error: {str(e)}"}
+        
     def execute_with_packages(self, code: str, timeout: int = 30) -> str:
         """
         Execute code and automatically install missing packages.

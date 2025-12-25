@@ -43,7 +43,10 @@ RUN uv pip install --system --no-cache \
     # Other utilities
     pillow \
     pyyaml \
-    python-dotenv
+    python-dotenv \
+    # Testing and linting
+    ruff \
+    pytest
 
 WORKDIR /workspace
 

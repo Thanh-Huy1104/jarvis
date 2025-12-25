@@ -1,7 +1,9 @@
 import logging
-from fastapi import APIRouter, HTTPException, Request
+import uuid
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
+from sse_starlette.sse import EventSourceResponse
 
 logger = logging.getLogger("uvicorn")
 
@@ -38,81 +40,53 @@ async def get_pending_skill(skill_id: str, request: Request):
     return skill
 
 @router.post("/skills/pending/{skill_id}/approve")
-async def approve_skill(skill_id: str, request: Request):
+async def approve_skill(skill_id: str, request: Request, background_tasks: BackgroundTasks):
     """
     Approve a pending skill.
-    Triggers an autonomous refinement loop (Code -> Sandbox -> Fix) to ensure quality.
-    If successful, moves the refined skill to the final library.
+    Triggers an autonomous refinement loop (Code -> Sandbox -> Fix) as a background job.
+    Returns a job_id to track progress via SSE.
     """
     # Access the dedicated SkillsEngine
     skills_engine = request.app.state.skills_engine
     pending = skills_engine.skills.pending
-    library = skills_engine.skills
     
     skill = pending.get_pending_skill(skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
-    
-    logger.info(f"Initiating approval/refinement loop for skill: {skill['name']}")
-    
-    # Run the autonomous verification/refinement loop
-    try:
-        final_state = await skills_engine.run_verification(
-            code=skill['code'],
-            user_input=skill['description'],
-            thread_id=f"approve_{skill_id}"
-        )
-    except Exception as e:
-        logger.error(f"Verification loop failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
-    
-    # Extract results
-    final_values = final_state
-    if hasattr(final_state, "values"):
-        final_values = final_state.values
         
-    generated_code = final_values.get("generated_code")
-    execution_result = final_values.get("execution_result")
-    execution_error = final_values.get("execution_error")
+    if not hasattr(request.app.state, "job_runner"):
+        raise HTTPException(status_code=500, detail="JobRunner not initialized")
     
-    if execution_error:
-        # Loop failed after retries
-        logger.warning(f"Skill approval failed. Verification error: {execution_error}")
-        
-        # Update pending skill with the failed attempt details
-        pending.update_pending_skill(
-            skill_id, 
-            code=generated_code, 
-            notes=f"Verification Failed: {execution_error[:200]}..."
-        )
-        
-        return {
-            "status": "failed", 
-            "error": execution_error,
-            "code": generated_code,
-            "output": execution_result
-        }
+    job_runner = request.app.state.job_runner
+    job_id = str(uuid.uuid4())
     
-    # Success! Save to Final Library
-    logger.info(f"Skill verified successfully. Saving '{skill['name']}' to library.")
+    logger.info(f"Initiating approval/refinement job {job_id} for skill: {skill['name']}")
     
-    success = library.save_skill(
-        name=skill['name'],
-        code=generated_code, # Use the refined code
-        description=skill['description']
+    # Start the verification job in the background
+    background_tasks.add_task(
+        job_runner.run_verification_job,
+        job_id=job_id,
+        code=skill['code'],
+        instruction=skill['description'],
+        skill_id=skill_id
     )
     
-    if success:
-        # Remove from pending
-        pending.delete_pending_skill(skill_id)
-        return {
-            "status": "approved", 
-            "skill_name": skill['name'],
-            "code": generated_code,
-            "output": execution_result
-        }
-    else:
-        raise HTTPException(status_code=500, detail="Failed to save skill to library")
+    return {"status": "started", "job_id": job_id, "skill_name": skill['name']}
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job(job_id: str, request: Request):
+    """
+    Stream events for a specific job using SSE.
+    """
+    if not hasattr(request.app.state, "event_bus"):
+        raise HTTPException(status_code=500, detail="EventBus not initialized")
+        
+    event_bus = request.app.state.event_bus
+    
+    # sse_starlette handles the async generator
+    return EventSourceResponse(
+        event_bus.stream(job_id)
+    )
 
 @router.delete("/skills/pending/{skill_id}")
 async def reject_skill(skill_id: str, request: Request):
@@ -215,3 +189,19 @@ async def test_skill(skill_id: str, request: Request):
     output = engine.sandbox.execute_with_packages(skill['code'])
     
     return {"status": "tested", "output": output}
+
+
+@router.get("/skills/library")
+async def list_library_skills(request: Request):
+    """List all approved skills in the library."""
+    skills_lib = request.app.state.engine.skills
+    return skills_lib.list_all_skills()
+
+@router.delete("/skills/library/{skill_id}")
+async def delete_library_skill(skill_id: str, request: Request):
+    """Delete an approved skill from the library."""
+    skills_lib = request.app.state.engine.skills
+    if skills_lib.delete_skill(skill_id):
+        return {"status": "deleted"}
+    else:
+        raise HTTPException(status_code=404, detail="Skill not found")

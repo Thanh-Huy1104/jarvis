@@ -33,6 +33,11 @@ sentence-transformers>=3.0.0
 # kuzu                  # Comment out if not strictly needed immediately
 rank-bm25
 
+# --- Database ---
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+greenlet
+
 # --- Skill Library (Code Storage) ---
 chromadb>=0.5.5         # Semantic code snippet library
 
@@ -52,4 +57,4 @@ python-dotenv
 # --- Testing ---
 pytest
 pytest-asyncio
-pytest-mock
+pytest-mocksse-starlette

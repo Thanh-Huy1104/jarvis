@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
+from app.adapters.chat_postgres import ChatPostgresAdapter
+from app.core.utils.title_generator import generate_session_title
 
 logger = logging.getLogger("uvicorn")
 logger.setLevel(logging.INFO)
@@ -14,12 +16,29 @@ def iter_pcm_chunks(pcm: bytes, chunk_samples: int = 4096):
     for i in range(0, len(pcm), step):
         yield pcm[i:i + step]
 
+@router.get("/sessions")
+async def get_sessions(request: Request, limit: int = 20, offset: int = 0):
+    """Retrieve list of chat sessions."""
+    return await request.app.state.chat_history.get_sessions(limit=limit, offset=offset)
+
+@router.post("/sessions")
+async def create_session(request: Request):
+    """Create a new chat session."""
+    session_id = await request.app.state.chat_history.create_session()
+    return {"session_id": session_id}
+
+@router.get("/history/{session_id}")
+async def get_chat_history(session_id: str, request: Request):
+    """Retrieve chat history for a session."""
+    return await request.app.state.chat_history.get_history(session_id=session_id)
+
 @router.websocket("/ws/voice")
 async def ws_voice(ws: WebSocket):
     """WebSocket handler for voice and text interaction."""
     await ws.accept()
     
     engine = ws.app.state.engine
+    chat_history = ws.app.state.chat_history
     audio_cache = ws.app.state.audio_cache
     
     # Queue for incoming messages from the client
@@ -37,6 +56,9 @@ async def ws_voice(ws: WebSocket):
             await q.put(None)
 
     receiver_task = asyncio.create_task(receiver())
+
+    # Persistent session ID for this connection
+    session_id = "default_session"
 
     try:
         while True:
@@ -58,7 +80,10 @@ async def ws_voice(ws: WebSocket):
                     try:
                         data = json.loads(msg["text"])
                         if data.get("type") == "start":
-                            pass # Session configuration could be handled here
+                            if "session_id" in data:
+                                session_id = data["session_id"]
+                                logger.info(f"[WS] Session ID set to: {session_id}")
+                            continue
                         elif data.get("type") == "text_input":
                             text_input = data.get("text")
                             if text_input:
@@ -68,11 +93,30 @@ async def ws_voice(ws: WebSocket):
                     except Exception as e:
                         logger.error(f"Error handling text message: {e}")
 
-            session_id = "default_session"
-            
             # Handle text or audio input with JarvisEngine
             try:
                 if text_input:
+                    # 1. Save User Message
+                    await chat_history.add_message(session_id, "user", text_input)
+
+                    # Trigger title generation if this is the first message
+                    async def generate_title_if_needed(sid, txt):
+                        try:
+                            history = await chat_history.get_history(sid, limit=2)
+                            # If only 1 message (the one we just added), generate title
+                            if len(history) == 1:
+                                title = await generate_session_title(engine.llm, txt)
+                                await chat_history.update_session_title(sid, title)
+                                await ws.send_text(json.dumps({
+                                    "type": "session_update",
+                                    "session_id": sid,
+                                    "title": title
+                                }))
+                        except Exception as e:
+                            logger.error(f"Title generation failed: {e}")
+
+                    asyncio.create_task(generate_title_if_needed(session_id, text_input))
+
                     await ws.send_text(json.dumps({"type": "assistant_start"}))
                     
                     # Create callback for task status updates
@@ -209,6 +253,11 @@ async def ws_voice(ws: WebSocket):
                     # Save skill and memory asynchronously in background (doesn't block UI)
                     final_state = graph.get_state(config)
                     if final_state:
+                        # 2. Save Assistant Message
+                        final_response = final_state.values.get("final_response", "")
+                        if final_response:
+                            await chat_history.add_message(session_id, "assistant", final_response)
+
                         # Synthesize and save memory for all interactions
                         async def save_synthesized_memory():
                             try:

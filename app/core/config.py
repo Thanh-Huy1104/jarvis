@@ -19,6 +19,8 @@ class Settings(BaseModel):
 
     # App
     max_recent_messages: int = 10
+    
+    database_url: str = "postgresql+asyncpg://jarvis:jarvis_password@localhost:5432/jarvis_db"
 
 
 settings = Settings()

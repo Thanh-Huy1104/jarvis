@@ -44,9 +44,12 @@ class AgentState(TypedDict):
     execution_error: Optional[str]  # Error traceback for self-correction
     retry_count: int  # Number of self-correction attempts
     
+    # Linting and Testing
+    lint_error: Optional[str]
+    test_output: Optional[str]
+    
     # Skill Management
     pending_skill_name: str
-    skill_approved: bool
     existing_skill_code: Optional[str]  # For deduplication
     used_skill_names: List[str]  # Track skills used in this request
     

@@ -12,7 +12,7 @@ from app.core.state import AgentState
 from app.core.router import JarvisRouter
 from app.core.skills import SkillLibrary
 from app.core import nodes
-from app.core.utils import cleanup_engine, log_timing_report
+from app.core.utils import log_timing_report
 from app.adapters.llm_vllm import VllmAdapter
 from app.adapters.memory_mem0 import Mem0Adapter
 from app.execution.sandbox import DockerSandbox
@@ -87,11 +87,11 @@ class JarvisEngine:
         logger.info("→ Routing to SEQUENTIAL execution")
         return "think_agent"
 
-    def check_execution_result(self, state: AgentState) -> Literal["think_agent", "admin_save"]:
+    def check_execution_result(self, state: AgentState) -> Literal["think_agent", "skill_proposer"]:
         """
         Conditional Edge: Implements self-correction loop.
         If execution failed, route back to think_agent with error feedback.
-        If succeeded, proceed to admin_save.
+        If succeeded, proceed to skill_proposer.
         """
         execution_error = state.get("execution_error")
         retry_count = state.get("retry_count", 0)
@@ -103,11 +103,11 @@ class JarvisEngine:
             return "think_agent"
         
         if retry_count >= max_retries:
-            logger.error(f"❌ Max retries ({max_retries}) reached, proceeding to admin_save")
+            logger.error(f"❌ Max retries ({max_retries}) reached, proceeding to skill_proposer")
         else:
-            logger.info("✅ Execution succeeded, proceeding to admin_save")
+            logger.info("✅ Execution succeeded, proceeding to skill_proposer")
         
-        return "admin_save"
+        return "skill_proposer"
 
     # =========================================================================
     # GRAPH CONSTRUCTION
@@ -138,8 +138,8 @@ class JarvisEngine:
         # Note: aggregate_parallel_results handles the concurrent worker execution internally
         workflow.add_node("parallel_executor", partial(nodes.aggregate_parallel_results, self))
         
-        # 4. Final Save (Admin) (sync)
-        workflow.add_node("admin_save", partial(nodes.admin_approval, self))
+        # 4. Skill Proposal
+        workflow.add_node("skill_proposer", partial(nodes.propose_pending_skill, self))
 
         # --- Add Edges ---
         
@@ -178,12 +178,12 @@ class JarvisEngine:
             self.check_execution_result,
             {
                 "think_agent": "think_agent",  # Retry with error feedback
-                "admin_save": "admin_save"      # Success or max retries
+                "skill_proposer": "skill_proposer"      # Success or max retries
             }
         )
         
         # Terminal nodes
-        workflow.add_edge("admin_save", END)
+        workflow.add_edge("skill_proposer", END)
         
         # Parallel Outcome
         workflow.add_edge("parallel_executor", END)

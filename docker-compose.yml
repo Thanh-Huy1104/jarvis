@@ -57,6 +57,21 @@ services:
       - jarvis_network
     restart: unless-stopped
 
+  postgres:
+    image: postgres:15-alpine
+    container_name: jarvis_postgres
+    restart: always
+    environment:
+      - POSTGRES_USER=jarvis
+      - POSTGRES_PASSWORD=jarvis_password
+      - POSTGRES_DB=jarvis_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - jarvis_network
+
 networks:
    jarvis_network:
     driver: bridge
@@ -65,3 +80,4 @@ volumes:
   qdrant_storage:
   neo4j_data:
   neo4j_logs:
+  postgres_data:

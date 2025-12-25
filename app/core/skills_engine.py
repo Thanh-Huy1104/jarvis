@@ -53,19 +53,42 @@ class SkillsEngine:
     def build_verification_graph(self):
         """
         Builds a dedicated graph for skill verification/refinement.
-        Start -> Execute -> (Fail? -> Think -> Execute)* -> End
+        Start -> Linter -> (Fail? -> Think -> Linter)* -> (Pass -> Execute -> End)
         """
         workflow = StateGraph(AgentState)
         
         # Reuse nodes from core
-        # We pass 'self' as the engine argument to these nodes
-        workflow.add_node("think_agent", partial(nodes.reason_and_code, self))
+        workflow.add_node("linter", partial(nodes.lint_code, self))
         workflow.add_node("executor", partial(nodes.execute_code, self))
+        workflow.add_node("think_agent", partial(nodes.reason_and_code, self))
         
-        # Start directly at executor (assuming code is in state)
-        workflow.add_edge(START, "executor")
+        # Start at linter
+        workflow.add_edge(START, "linter")
         
-        # Loop logic
+        def check_lint(state):
+            lint_error = state.get("lint_error")
+            retry_count = state.get("retry_count", 0)
+            max_retries = 3
+            
+            if lint_error:
+                if retry_count < max_retries:
+                    logger.warning(f"⚠️ Linting failed (attempt {retry_count}/{max_retries}), retrying...")
+                    return "think_agent"
+                logger.warning(f"⚠️ Linting failed max retries ({max_retries})")
+                return END
+            return "executor"
+        
+        workflow.add_conditional_edges(
+            "linter", 
+            check_lint, 
+            {
+                "think_agent": "think_agent",
+                "executor": "executor",
+                END: END
+            }
+        )
+
+        # Loop logic for execution (functional tests)
         workflow.add_conditional_edges(
             "executor",
             self.check_verification_result,
@@ -75,7 +98,8 @@ class SkillsEngine:
             }
         )
         
-        workflow.add_edge("think_agent", "executor")
+        # After refinement, always re-lint to ensure new code is clean
+        workflow.add_edge("think_agent", "linter")
         
         return workflow.compile(checkpointer=self.checkpointer)
 
@@ -96,3 +120,19 @@ class SkillsEngine:
         # Run until end
         final_state = await graph.ainvoke(initial_state, config=config)
         return final_state
+
+    async def run_verification_stream(self, code: str, user_input: str, thread_id: str = "verification"):
+        """Stream execution events for a specific piece of code."""
+        graph = self.build_verification_graph()
+        config = {"configurable": {"thread_id": thread_id}}
+        
+        initial_state = {
+            "user_input": user_input,
+            "generated_code": code,
+            "retry_count": 0,
+            "messages": [],
+            "intent_mode": "complex"
+        }
+        
+        async for event in graph.astream_events(initial_state, config=config, version="v1"):
+            yield event
