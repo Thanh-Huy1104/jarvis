@@ -1,9 +1,13 @@
 import logging
 import uuid
+import glob
+import os
+import ast
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 from sse_starlette.sse import EventSourceResponse
+from app.core.utils.executor import execute_with_packages
 
 logger = logging.getLogger("uvicorn")
 
@@ -43,7 +47,7 @@ async def get_pending_skill(skill_id: str, request: Request):
 async def approve_skill(skill_id: str, request: Request, background_tasks: BackgroundTasks):
     """
     Approve a pending skill.
-    Triggers an autonomous refinement loop (Code -> Sandbox -> Fix) as a background job.
+    Triggers an autonomous refinement loop (Code -> Fix) as a background job.
     Returns a job_id to track progress via SSE.
     """
     # Access the dedicated SkillsEngine
@@ -169,39 +173,127 @@ async def manual_update_skill(skill_id: str, body: UpdateSkillRequest, request: 
 
 @router.post("/sandbox/test")
 async def test_code(body: TestCodeRequest, request: Request):
-    """Test run arbitrary code in the sandbox."""
-    engine = request.app.state.engine
+    """Test run arbitrary code locally."""
     # execute_with_packages handles import detection and installation
-    output = engine.sandbox.execute_with_packages(body.code)
+    output = execute_with_packages(body.code)
     return {"output": output}
 
 @router.post("/skills/pending/{skill_id}/test")
 async def test_skill(skill_id: str, request: Request):
-    """Test run a pending skill in the sandbox."""
-    engine = request.app.state.engine
-    pending = engine.skills.pending
+    """Test run a pending skill locally."""
+    pending = request.app.state.engine.skills.pending
     
     skill = pending.get_pending_skill(skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     
-    # Execute the code in the sandbox
-    output = engine.sandbox.execute_with_packages(skill['code'])
+    # Execute the code locally
+    output = execute_with_packages(skill['code'])
     
     return {"status": "tested", "output": output}
 
 
 @router.get("/skills/library")
 async def list_library_skills(request: Request):
-    """List all approved skills in the library."""
-    skills_lib = request.app.state.engine.skills
-    return skills_lib.list_all_skills()
+    """
+    List all active skills in the library.
+    Reads directly from the .jarvis/skills/library directory.
+    """
+    skills_dir = ".jarvis/skills/library"
+    skills = []
+    
+    if not os.path.exists(skills_dir):
+        return []
+        
+    for py_file in glob.glob(f"{skills_dir}/*.py"):
+        if "__init__" in py_file:
+            continue
+            
+        try:
+            with open(py_file, 'r') as f:
+                content = f.read()
+                
+            # Basic parsing to get docstring (description)
+            tree = ast.parse(content)
+            description = ast.get_docstring(tree) or "No description."
+            name = os.path.splitext(os.path.basename(py_file))[0]
+            
+            skills.append({
+                "name": name,
+                "description": description.strip(),
+                "code": content, # Frontend might want to see the code
+                "file_path": py_file
+            })
+        except Exception as e:
+            logger.error(f"Error reading skill {py_file}: {e}")
+            
+    return skills
 
-@router.delete("/skills/library/{skill_id}")
-async def delete_library_skill(skill_id: str, request: Request):
-    """Delete an approved skill from the library."""
-    skills_lib = request.app.state.engine.skills
-    if skills_lib.delete_skill(skill_id):
-        return {"status": "deleted"}
+@router.delete("/skills/library/{skill_name}")
+async def delete_library_skill(skill_name: str, request: Request):
+    """Delete an active skill from the library."""
+    file_path = f".jarvis/skills/library/{skill_name}.py"
+    
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            # Re-sync registry if possible, or wait for next restart
+            # request.app.state.engine.skills.sync_library() 
+            return {"status": "deleted", "name": skill_name}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
+    else:
+        raise HTTPException(status_code=404, detail="Skill not found")
+
+
+@router.get("/skills/library")
+async def list_library_skills(request: Request):
+    """
+    List all active skills in the library.
+    Reads directly from the .jarvis/skills/library directory.
+    """
+    skills_dir = ".jarvis/skills/library"
+    skills = []
+    
+    if not os.path.exists(skills_dir):
+        return []
+        
+    for py_file in glob.glob(f"{skills_dir}/*.py"):
+        if "__init__" in py_file:
+            continue
+            
+        try:
+            with open(py_file, 'r') as f:
+                content = f.read()
+                
+            # Basic parsing to get docstring (description)
+            tree = ast.parse(content)
+            description = ast.get_docstring(tree) or "No description."
+            name = os.path.splitext(os.path.basename(py_file))[0]
+            
+            skills.append({
+                "name": name,
+                "description": description.strip(),
+                "code": content, # Frontend might want to see the code
+                "file_path": py_file
+            })
+        except Exception as e:
+            logger.error(f"Error reading skill {py_file}: {e}")
+            
+    return skills
+
+@router.delete("/skills/library/{skill_name}")
+async def delete_library_skill(skill_name: str, request: Request):
+    """Delete an active skill from the library."""
+    file_path = f".jarvis/skills/library/{skill_name}.py"
+    
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+            # Re-sync registry if possible, or wait for next restart
+            # request.app.state.engine.skills.sync_library() 
+            return {"status": "deleted", "name": skill_name}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete: {e}")
     else:
         raise HTTPException(status_code=404, detail="Skill not found")

@@ -69,8 +69,7 @@ async def lifespan(app: FastAPI):
     # 4. Initialize SkillsEngine (Verification Loop)
     app.state.skills_engine = SkillsEngine(
         llm=app.state.engine.llm,
-        skills=app.state.engine.skills,
-        sandbox=app.state.engine.sandbox
+        skills=app.state.engine.skills
     )
     print("[Main] SkillsEngine initialized")
     
@@ -101,7 +100,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Jarvis Local", lifespan=lifespan)
 
 # Instrument FastAPI
-FastAPIInstrumentor.instrument_app(app, tracer_provider=tracer_provider, excluded_urls="/ws/voice")
+FastAPIInstrumentor.instrument_app(app, tracer_provider=tracer_provider, excluded_urls="/ws/chat")
 
 app.include_router(router)
 app.include_router(skills_router)

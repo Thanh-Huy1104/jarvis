@@ -11,6 +11,7 @@ class SubTask(TypedDict):
     description: str
     status: str  # "pending", "complete", "failed"
     result: Optional[str]
+    code_hint: Optional[str]
 
 
 class AgentState(TypedDict):

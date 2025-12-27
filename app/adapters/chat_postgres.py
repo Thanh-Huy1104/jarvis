@@ -2,7 +2,7 @@ from typing import List, Optional
 from app.db.session import AsyncSessionLocal
 from app.db.models import ChatMessageModel, ChatSessionModel
 from app.core.types import ChatMessage
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 import uuid
 
 class ChatPostgresAdapter:
@@ -42,6 +42,23 @@ class ChatPostgresAdapter:
                 }
                 for row in rows
             ]
+
+    async def delete_session(self, session_id: str) -> bool:
+        async with AsyncSessionLocal() as session:
+            # Check if session exists
+            result = await session.execute(select(ChatSessionModel).where(ChatSessionModel.id == session_id))
+            existing = result.scalar_one_or_none()
+            
+            if not existing:
+                return False
+
+            # Delete associated messages first (manual cascade)
+            await session.execute(delete(ChatMessageModel).where(ChatMessageModel.session_id == session_id))
+            
+            # Delete session
+            await session.execute(delete(ChatSessionModel).where(ChatSessionModel.id == session_id))
+            await session.commit()
+            return True
 
     async def update_session_title(self, session_id: str, title: str):
         async with AsyncSessionLocal() as session:

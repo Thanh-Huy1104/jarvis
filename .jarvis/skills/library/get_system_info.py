@@ -1,43 +1,10 @@
----
-name: system-monitoring
-description: Monitor system resources including CPU, GPU, memory, disk usage, and running processes.
-version: 1.0.0
-tools: [python]
-dependencies: [psutil]
----
-
-# System Monitoring
-
-## Description
-Provides a comprehensive snapshot of the current system state, including CPU usage, Memory consumption, Disk space, and GPU stats (via `nvidia-smi` if available).
-
-## When to Use
-- When the user asks "How is my system doing?" or "Check system resources".
-- Before running heavy tasks to ensure sufficient resources.
-- To debug performance issues.
-
-## How to Use
-Call `get_system_info()`. No arguments required.
-
-```python
-stats = get_system_info()
-print(stats)
-```
-
-## Dependencies
-- `psutil`: For CPU/RAM/Disk metrics.
-- `nvidia-smi`: (External CLI) Required for GPU metrics.
-
-## Code
-
-```python
 import psutil
 import subprocess
 import shutil
 
 def get_system_info():
     """
-    Get comprehensive system information including GPU metrics.
+    Monitor system resources including CPU, GPU, memory, disk usage, and running processes.
     """
     # CPU
     cpu_percent = psutil.cpu_percent(interval=1)
@@ -71,16 +38,15 @@ def get_system_info():
             
             lines = output.strip().split('\n')
             
-            # THE FIX: Strip whitespace from headers to avoid KeyError: ' index'
+            # Strip whitespace from headers
             headers = [h.strip() for h in lines[0].split(',')]
             
             for line in lines[1:]:
-                # THE FIX: Strip whitespace from values too
                 values = [v.strip() for v in line.split(',')]
                 gpu_data = {h: v for h, v in zip(headers, values)}
                 
                 gpu_info.append(
-                    f"GPU {gpu_data.get('index', '?')}: {gpu_data.get('name', 'Unknown')} | "
+                    f"GPU {gpu_data.get('index', '?')}: {gpu_data.get('name', 'Unknown')}" 
                     f"Temp: {gpu_data.get('temperature.gpu', 'N/A')}°C | "
                     f"Load: {gpu_data.get('utilization.gpu', '0%')} | "
                     f"VRAM: {gpu_data.get('memory.used', '0')} / {gpu_data.get('memory.total', '0')}"
@@ -98,11 +64,3 @@ Disk:   {disk_used_gb:.1f}GB / {disk_total_gb:.1f}GB ({disk_percent}%)
 ----------------
 {chr(10).join(gpu_info)}
 """
-
-if __name__ == "__main__":
-    print(get_system_info())
-```
-
-## Troubleshooting
-- **GPU Info Missing**: Ensure NVIDIA drivers are installed and `nvidia-smi` is in the system PATH.
-- **Permission Denied**: Some system metrics might require elevated privileges (rare for basic stats).

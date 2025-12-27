@@ -69,7 +69,7 @@ class JobRunner:
                             job_id=job_id,
                             stage=PipelineStage.TESTING,
                             type=EventType.STEP_START,
-                            content="Running in sandbox..."
+                            content="Running code locally..."
                         ))
                     elif name == "think_agent":
                         await self.bus.publish(PipelineEvent(

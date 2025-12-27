@@ -10,12 +10,11 @@ from langgraph.checkpoint.memory import MemorySaver
 # Internal Imports
 from app.core.state import AgentState
 from app.core.router import JarvisRouter
-from app.core.skills import SkillLibrary
+from app.core.skill_registry import SkillRegistry
 from app.core import nodes
 from app.core.utils import log_timing_report
 from app.adapters.llm_vllm import VllmAdapter
 from app.adapters.memory_mem0 import Mem0Adapter
-from app.execution.sandbox import DockerSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +35,7 @@ class JarvisEngine:
         self.router = JarvisRouter()
         self.llm = VllmAdapter()
         self.memory = Mem0Adapter()
-        self.skills = SkillLibrary()
-        self.sandbox = DockerSandbox()
+        self.skills = SkillRegistry()
         
         # Runtime State
         self._timing = {}

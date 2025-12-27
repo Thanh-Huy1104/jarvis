@@ -42,7 +42,6 @@ greenlet
 chromadb>=0.5.5         # Semantic code snippet library
 
 # --- Tools & Sandbox (The "Body") ---
-docker
 psutil
 
 # --- Audio ---
@@ -53,8 +52,10 @@ soundfile
 
 # --- Utilities ---
 python-dotenv
+tavily-python
+yfinance
 
 # --- Testing ---
 pytest
 pytest-asyncio
-pytest-mocksse-starlette
+

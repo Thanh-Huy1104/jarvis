@@ -1,25 +1,4 @@
 services:
-  jarvis_sandbox:
-    build:
-      context: .
-      dockerfile: Dockerfile.sandbox
-    image: jarvis-sandbox:latest
-    container_name: jarvis_sandbox
-    command: tail -f /dev/null
-    working_dir: /workspace
-    volumes:
-      - ./jarvis_data/workspace:/workspace
-      - ./jarvis_data/credentials:/workspace/credentials:ro
-    network_mode: bridge
-    environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=/workspace/credentials/google-calendar.json
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
-      - DATABASE_URL=${DATABASE_URL:-}
-    mem_limit: 4g
-    cpus: 3.0
-    restart: unless-stopped
-
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant

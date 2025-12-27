@@ -1,4 +1,5 @@
 from app.core.state import AgentState
+from app.core.utils.executor import lint_code_locally
 from langchain_core.messages import AIMessage
 import logging
 
@@ -15,7 +16,7 @@ async def lint_code(engine, state: AgentState):
     retry_count = state.get("retry_count", 0)
     messages = state.get("messages", [])
     
-    output = engine.sandbox.execute_lint(code)
+    output = lint_code_locally(code)
     
     if output["success"]:
         return { "lint_error": None }

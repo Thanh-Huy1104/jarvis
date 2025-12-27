@@ -125,11 +125,9 @@ class Mem0Adapter(MemoryPort):
 
     def _get_hardcoded_directives(self) -> List[str]:
         return [
-            "Always output Python code for complex tasks.",
             "Do not delete files outside /workspace.",
             "User prefers concise answers.",
             "When executing code, ensure proper error handling.",
             "Prioritize security and data privacy.",
-            "Use the sandbox environment for all code execution.",
             "Provide explanations for complex operations."
         ]

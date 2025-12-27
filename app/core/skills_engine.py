@@ -18,18 +18,16 @@ class SkillsEngine:
     Separates the "loop until satisfied" logic from the main Jarvis flow.
     """
     
-    def __init__(self, llm, skills, sandbox):
+    def __init__(self, llm, skills):
         """
         Initialize with references to core components.
         
         Args:
             llm: VllmAdapter instance
-            skills: SkillLibrary instance
-            sandbox: DockerSandbox instance
+            skills: SkillRegistry instance
         """
         self.llm = llm
         self.skills = skills
-        self.sandbox = sandbox
         self.checkpointer = MemorySaver()
         self._timing = {} # Required by nodes.reason_and_code/execute_code
 
