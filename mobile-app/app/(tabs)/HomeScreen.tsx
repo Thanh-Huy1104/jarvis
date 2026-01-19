@@ -34,11 +34,15 @@ export default function HomeScreen() {
       // Check if response needs clarification
       if (botResponse.result?.needs_section_creation || botResponse.result?.needs_clarification) {
         const clarificationText = botResponse.result.clarification_question || botResponse.response;
+        
+        // Check if it's a yes/no question (section creation)
+        const isYesNoQuestion = botResponse.result.needs_section_creation;
+        
         const botMessage: Message = { 
           id: Date.now().toString() + 'b', 
           text: clarificationText, 
           sender: 'bot',
-          needsClarification: true,
+          needsClarification: isYesNoQuestion,
           clarificationData: botResponse.result
         };
         setMessages(prevMessages => [...prevMessages, botMessage]);

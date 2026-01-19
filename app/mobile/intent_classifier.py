@@ -35,6 +35,7 @@ For "create_section":
 - Extract: name (the section/category name), description (optional)
 - Use this intent when user explicitly wants to create a new category/folder/section for organizing notes
 - Examples: "Create a new section called X", "Make a new category for Y", "Add a folder for Z"
+- IMPORTANT: Even if the section name is not provided, still classify as "create_section" and set needs_clarification=true
 
 For "view_calendar":
 - Extract: start_date, end_date, or time_period (today, tomorrow, this_week, next_week)
@@ -69,6 +70,12 @@ Output: {{"intent": "create_note", "confidence": 0.95, "data": {{"content": "Fol
 
 Input: "Create a new section called Shopping List"
 Output: {{"intent": "create_section", "confidence": 0.95, "data": {{"name": "Shopping List", "description": ""}}, "needs_clarification": false}}
+
+Input: "Can you create a new section"
+Output: {{"intent": "create_section", "confidence": 0.9, "data": {{"name": ""}}, "needs_clarification": true, "clarification_question": "What would you like to name the section?"}}
+
+Input: "Add a reminder"
+Output: {{"intent": "create_reminder", "confidence": 0.95, "data": {{"title": "Reminder", "datetime": ""}}, "needs_clarification": true, "clarification_question": "When would you like to be reminded?"}}
 
 Input: "What do I have scheduled tomorrow?"
 Output: {{"intent": "view_calendar", "confidence": 0.9, "data": {{"time_period": "tomorrow"}}, "needs_clarification": false}}
@@ -247,6 +254,43 @@ class MobileIntentHandler:
             }
         except Exception as e:
             logger.error(f"Error creating reminder: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def handle_create_section(self, user_id: str, data: Dict) -> Dict:
+        """Handle create_section intent"""
+        try:
+            section_name = data.get("name", "")
+            
+            if not section_name:
+                return {
+                    "success": False,
+                    "needs_clarification": True,
+                    "clarification_question": "What would you like to name this section?"
+                }
+            
+            # Check if section already exists
+            existing_section = await self.notes.get_section_by_name(user_id, section_name)
+            
+            if existing_section:
+                return {
+                    "success": False,
+                    "message": f"Section '{section_name}' already exists."
+                }
+            
+            # Create the section
+            result = await self.notes.create_section(
+                user_id=user_id,
+                name=section_name,
+                description=data.get("description", "")
+            )
+            
+            return {
+                "success": True,
+                "data": result,
+                "message": f"Created section '{section_name}'"
+            }
+        except Exception as e:
+            logger.error(f"Error creating section: {e}")
             return {"success": False, "error": str(e)}
     
     async def handle_create_note(self, user_id: str, data: Dict) -> Dict:

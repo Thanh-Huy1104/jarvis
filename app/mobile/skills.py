@@ -257,6 +257,30 @@ class NoteSkills:
                 }
                 for note in notes
             ]
+
+    @staticmethod
+    async def get_all_notes(user_id: str, limit: int = 100) -> List[Dict]:
+        """Get all notes for a user"""
+        async with AsyncSessionLocal() as session:
+            query = (
+                select(NoteModel)
+                .where(NoteModel.user_id == user_id)
+                .order_by(NoteModel.created_at.desc())
+                .limit(limit)
+            )
+            result = await session.execute(query)
+            notes = result.scalars().all()
+            
+            return [
+                {
+                    "id": note.id,
+                    "section_id": note.section_id,
+                    "content": note.content,
+                    "tags": note.tags,
+                    "created_at": note.created_at.isoformat()
+                }
+                for note in notes
+            ]
     
     @staticmethod
     async def search_notes(user_id: str, query: str, limit: int = 50) -> List[Dict]:

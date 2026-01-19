@@ -79,6 +79,19 @@ async def chat(request: Request, data: ChatRequest):
         intent_result = await classifier.classify_intent(text, user_id)
         logger.info(f"Intent result: {intent_result}")
 
+        # Check if LLM itself needs clarification
+        if intent_result.get("needs_clarification") and intent_result.get("clarification_question"):
+            return {
+                "response": intent_result.get("clarification_question"),
+                "intent": intent_result.get("intent"),
+                "confidence": intent_result.get("confidence"),
+                "result": {
+                    "success": False,
+                    "needs_clarification": True,
+                    "clarification_question": intent_result.get("clarification_question"),
+                    "pending_data": intent_result.get("data")
+                }
+            }
 
         # Step 2: Execute based on intent
         handler = MobileIntentHandler(CalendarSkills, NoteSkills)
@@ -90,6 +103,8 @@ async def chat(request: Request, data: ChatRequest):
             result = await handler.handle_create_reminder(user_id, intent_data)
         elif intent == "create_note":
             result = await handler.handle_create_note(user_id, intent_data)
+        elif intent == "create_section":
+            result = await handler.handle_create_section(user_id, intent_data)
         elif intent == "view_calendar":
             result = await handler.handle_view_calendar(user_id, intent_data)
         elif intent == "view_notes":
