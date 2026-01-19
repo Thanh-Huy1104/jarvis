@@ -6,7 +6,7 @@ Calendar and Notes management functions
 
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
-from sqlalchemy import select, and_, or_, delete, update
+from sqlalchemy import select, and_, or_, delete, update, func
 from app.db.session import AsyncSessionLocal
 from app.db.models import CalendarEventModel, NoteSectionModel, NoteModel
 import logging
@@ -34,7 +34,7 @@ class CalendarSkills:
                 description=description,
                 event_datetime=event_datetime,
                 duration_minutes=duration_minutes,
-                metadata=metadata or {}
+                extra_data=metadata or {}
             )
             session.add(event)
             await session.commit()
@@ -76,7 +76,6 @@ class CalendarSkills:
                     "description": event.description,
                     "event_datetime": event.event_datetime.isoformat(),
                     "duration_minutes": event.duration_minutes,
-                    "metadata": event.metadata,
                     "created_at": event.created_at.isoformat()
                 }
                 for event in events
@@ -158,25 +157,52 @@ class NoteSkills:
     
     @staticmethod
     async def get_sections(user_id: str) -> List[Dict]:
-        """Get all sections for a user"""
+        """Get all sections for a user, with a preview of the first 3 notes."""
         async with AsyncSessionLocal() as session:
-            query = (
+            # 1. Fetch all sections for the user
+            sections_query = (
                 select(NoteSectionModel)
                 .where(NoteSectionModel.user_id == user_id)
                 .order_by(NoteSectionModel.created_at)
             )
-            result = await session.execute(query)
-            sections = result.scalars().all()
+            sections_result = await session.execute(sections_query)
+            sections = sections_result.scalars().all()
             
-            return [
-                {
+            if not sections:
+                return []
+
+            # 2. Fetch all notes for the user and group them by section_id
+            notes_query = (
+                select(NoteModel)
+                .where(NoteModel.user_id == user_id)
+                .order_by(NoteModel.created_at.desc())
+            )
+            notes_result = await session.execute(notes_query)
+            all_notes = notes_result.scalars().all()
+            
+            notes_by_section = {}
+            for note in all_notes:
+                if note.section_id not in notes_by_section:
+                    notes_by_section[note.section_id] = []
+                notes_by_section[note.section_id].append({
+                    "id": note.id,
+                    "content": note.content,
+                    "created_at": note.created_at.isoformat()
+                })
+
+            # 3. Combine sections with their note previews
+            result = []
+            for section in sections:
+                section_data = {
                     "id": section.id,
                     "name": section.name,
                     "description": section.description,
-                    "created_at": section.created_at.isoformat()
+                    "created_at": section.created_at.isoformat(),
+                    "notes_preview": notes_by_section.get(section.id, [])[:3]
                 }
-                for section in sections
-            ]
+                result.append(section_data)
+            
+            return result
     
     @staticmethod
     async def get_section_by_name(user_id: str, name: str) -> Optional[Dict]:
@@ -257,30 +283,6 @@ class NoteSkills:
                 }
                 for note in notes
             ]
-
-    @staticmethod
-    async def get_all_notes(user_id: str, limit: int = 100) -> List[Dict]:
-        """Get all notes for a user"""
-        async with AsyncSessionLocal() as session:
-            query = (
-                select(NoteModel)
-                .where(NoteModel.user_id == user_id)
-                .order_by(NoteModel.created_at.desc())
-                .limit(limit)
-            )
-            result = await session.execute(query)
-            notes = result.scalars().all()
-            
-            return [
-                {
-                    "id": note.id,
-                    "section_id": note.section_id,
-                    "content": note.content,
-                    "tags": note.tags,
-                    "created_at": note.created_at.isoformat()
-                }
-                for note in notes
-            ]
     
     @staticmethod
     async def search_notes(user_id: str, query: str, limit: int = 50) -> List[Dict]:
@@ -322,3 +324,49 @@ class NoteSkills:
             result = await session.execute(stmt)
             await session.commit()
             return result.rowcount > 0
+    
+    @staticmethod
+    async def delete_section(section_id: int, user_id: str) -> Dict:
+        """
+        Delete a note section, but only if it has no notes
+        
+        Returns:
+            Dict with "success" bool and "message" string
+        """
+        async with AsyncSessionLocal() as session:
+            # First check if section has any notes
+            count_query = select(func.count()).select_from(NoteModel).where(
+                and_(
+                    NoteModel.section_id == section_id,
+                    NoteModel.user_id == user_id
+                )
+            )
+            result = await session.execute(count_query)
+            note_count = result.scalar()
+            
+            if note_count > 0:
+                return {
+                    "success": False,
+                    "message": f"Cannot delete section - it contains {note_count} note(s). Please delete or move the notes first."
+                }
+            
+            # Section is empty, safe to delete
+            stmt = delete(NoteSectionModel).where(
+                and_(
+                    NoteSectionModel.id == section_id,
+                    NoteSectionModel.user_id == user_id
+                )
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            
+            if result.rowcount > 0:
+                return {
+                    "success": True,
+                    "message": "Section deleted successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "Section not found"
+                }

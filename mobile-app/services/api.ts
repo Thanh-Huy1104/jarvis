@@ -18,19 +18,29 @@ export const sendMessage = async (message: string) => {
   }
 };
 
-export const getNotes = async () => {
+export const getSections = async () => {
   try {
-    const response = await apiClient.get('/mobile/notes');
+    const response = await apiClient.get('/mobile/notes/sections/default-user');
     return response.data;
   } catch (error) {
-    console.error('Error getting notes:', error);
+    console.error('Error getting sections:', error);
+    throw error;
+  }
+};
+
+export const getNotesBySection = async (sectionId: string) => {
+  try {
+    const response = await apiClient.get(`/mobile/notes/default-user/section/${sectionId}`);
+    return response.data;
+  } catch (error) {
+    console.error('Error getting notes by section:', error);
     throw error;
   }
 };
 
 export const getCalendarEvents = async () => {
   try {
-    const response = await apiClient.get('/mobile/calendar');
+    const response = await apiClient.get('/mobile/calendar/events/default-user');
     return response.data;
   } catch (error) {
     console.error('Error getting calendar events:', error);
@@ -51,3 +61,4 @@ export const createSection = async (sectionName: string, description?: string) =
     throw error;
   }
 };
+

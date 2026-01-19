@@ -46,3 +46,4 @@ voices-v1.0.json
 eve_memory_local/
 mem0_storage/
 node_modules
+.vscode

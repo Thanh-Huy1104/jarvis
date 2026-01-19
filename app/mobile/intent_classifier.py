@@ -20,22 +20,35 @@ class IntentClassifier:
     INTENT_SYSTEM_PROMPT = """You are an intent classifier for a voice-based mobile app that manages reminders and notes.
 
 Your job is to analyze user voice input and:
-1. Classify the intent as one of: "create_reminder", "create_note", "create_section", "view_calendar", "view_notes", "other"
+1. Classify the intent as one of: "create_reminder", "delete_reminder", "create_note", "delete_note", "create_section", "delete_section", "view_calendar", "view_notes", "other"
 2. Extract relevant structured data
 
 For "create_reminder":
 - Extract: title, datetime (in ISO format), description, duration_minutes
 - Parse natural language dates like "tomorrow at 3pm", "next Monday at 9am", "in 2 hours"
 
+For "delete_reminder":
+- Extract: title (partial match ok), datetime (optional), or any identifying info
+- Examples: "Remove the meeting", "Delete the January 20th event", "Cancel my reminder for tomorrow"
+
 For "create_note":
 - Extract: content, section_name (the category/folder for the note), tags (list)
 - If no section is mentioned, set section_name to "General"
+
+For "delete_note":
+- Extract: content (search term), section_name (optional)
+- Examples: "Delete the note about project X", "Remove my shopping note"
 
 For "create_section":
 - Extract: name (the section/category name), description (optional)
 - Use this intent when user explicitly wants to create a new category/folder/section for organizing notes
 - Examples: "Create a new section called X", "Make a new category for Y", "Add a folder for Z"
 - IMPORTANT: Even if the section name is not provided, still classify as "create_section" and set needs_clarification=true
+
+For "delete_section":
+- Extract: name (the section/category name to delete)
+- Examples: "Delete the Work section", "Remove my Shopping List category", "Delete section called X"
+- System will check if section has notes and prevent deletion if not empty
 
 For "view_calendar":
 - Extract: start_date, end_date, or time_period (today, tomorrow, this_week, next_week)
@@ -45,7 +58,7 @@ For "view_notes":
 
 Respond ONLY with valid JSON in this format:
 {{
-    "intent": "create_reminder|create_note|create_section|view_calendar|view_notes|other",
+    "intent": "create_reminder|delete_reminder|create_note|delete_note|create_section|delete_section|view_calendar|view_notes|other",
     "confidence": 0.0-1.0,
     "data": {{
         // relevant fields based on intent
@@ -71,6 +84,15 @@ Output: {{"intent": "create_note", "confidence": 0.95, "data": {{"content": "Fol
 Input: "Create a new section called Shopping List"
 Output: {{"intent": "create_section", "confidence": 0.95, "data": {{"name": "Shopping List", "description": ""}}, "needs_clarification": false}}
 
+Input: "Remove the January 20th event"
+Output: {{"intent": "delete_reminder", "confidence": 0.9, "data": {{"datetime": "2026-01-20", "title": ""}}, "needs_clarification": false}}
+
+Input: "Delete my shopping note"
+Output: {{"intent": "delete_note", "confidence": 0.85, "data": {{"content": "shopping", "section_name": ""}}, "needs_clarification": false}}
+
+Input: "Delete the Work section"
+Output: {{"intent": "delete_section", "confidence": 0.9, "data": {{"name": "Work"}}, "needs_clarification": false}}
+
 Input: "Can you create a new section"
 Output: {{"intent": "create_section", "confidence": 0.9, "data": {{"name": ""}}, "needs_clarification": true, "clarification_question": "What would you like to name the section?"}}
 
@@ -79,6 +101,12 @@ Output: {{"intent": "create_reminder", "confidence": 0.95, "data": {{"title": "R
 
 Input: "What do I have scheduled tomorrow?"
 Output: {{"intent": "view_calendar", "confidence": 0.9, "data": {{"time_period": "tomorrow"}}, "needs_clarification": false}}
+
+Input: "What are the events"
+Output: {{"intent": "view_calendar", "confidence": 0.85, "data": {{"time_period": "this_week"}}, "needs_clarification": false}}
+
+Input: "Show me my calendar"
+Output: {{"intent": "view_calendar", "confidence": 0.9, "data": {{"time_period": "this_week"}}, "needs_clarification": false}}
 """
     
     def __init__(self, llm):
@@ -293,6 +321,129 @@ class MobileIntentHandler:
             logger.error(f"Error creating section: {e}")
             return {"success": False, "error": str(e)}
     
+    async def handle_delete_reminder(self, user_id: str, data: Dict) -> Dict:
+        """Handle delete_reminder intent"""
+        try:
+            title = data.get("title", "")
+            datetime_str = data.get("datetime", "")
+            
+            # Get events to find matches
+            events = await self.calendar.get_events(user_id=user_id, limit=100)
+            
+            # Filter events
+            matching_events = []
+            for event in events:
+                if datetime_str:
+                    event_date = event["event_datetime"].split("T")[0]
+                    if datetime_str in event_date:
+                        matching_events.append(event)
+                elif title and title.lower() in event["title"].lower():
+                    matching_events.append(event)
+            
+            if not matching_events:
+                return {
+                    "success": False,
+                    "message": "No matching events found. Can you be more specific?"
+                }
+            
+            if len(matching_events) > 1:
+                # Multiple matches - need clarification
+                event_list = "\n".join([f"• {e['title']} - {e['event_datetime']}" for e in matching_events[:5]])
+                return {
+                    "success": False,
+                    "needs_clarification": True,
+                    "clarification_question": f"Found {len(matching_events)} events:\n{event_list}\n\nWhich one?",
+                    "pending_data": {"matching_events": matching_events}
+                }
+            
+            # Delete the event
+            event = matching_events[0]
+            await self.calendar.delete_event(event["id"], user_id)
+            
+            event_dt = datetime.fromisoformat(event["event_datetime"])
+            formatted_date = event_dt.strftime("%A, %B %d at %I:%M %p")
+            
+            return {
+                "success": True,
+                "message": f"Deleted: {event['title']} on {formatted_date}"
+            }
+        except Exception as e:
+            logger.error(f"Error deleting reminder: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def handle_delete_note(self, user_id: str, data: Dict) -> Dict:
+        """Handle delete_note intent"""
+        try:
+            content_search = data.get("content", "")
+            section_name = data.get("section_name", "")
+            
+            # Search for matching notes
+            if content_search:
+                notes = await self.notes.search_notes(user_id, content_search)
+            elif section_name:
+                section = await self.notes.get_section_by_name(user_id, section_name)
+                if section:
+                    notes = await self.notes.get_notes_by_section(user_id, section["id"])
+                else:
+                    return {"success": False, "message": f"Section '{section_name}' not found"}
+            else:
+                return {
+                    "success": False,
+                    "needs_clarification": True,
+                    "clarification_question": "Which note would you like to delete?"
+                }
+            
+            if not notes:
+                return {"success": False, "message": "No matching notes found"}
+            
+            if len(notes) > 1:
+                # Multiple matches - need clarification
+                note_list = "\n".join([f"• {n['content'][:50]}..." for n in notes[:5]])
+                return {
+                    "success": False,
+                    "needs_clarification": True,
+                    "clarification_question": f"Found {len(notes)} notes:\n{note_list}\n\nWhich one?",
+                    "pending_data": {"matching_notes": notes}
+                }
+            
+            # Delete the note
+            note = notes[0]
+            await self.notes.delete_note(note["id"], user_id)
+            
+            return {
+                "success": True,
+                "message": f"Deleted note: {note['content'][:50]}..."
+            }
+        except Exception as e:
+            logger.error(f"Error deleting note: {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def handle_delete_section(self, user_id: str, data: Dict) -> Dict:
+        """Handle delete_section intent"""
+        try:
+            section_name = data.get("name", "")
+            
+            if not section_name:
+                return {
+                    "success": False,
+                    "needs_clarification": True,
+                    "clarification_question": "Which section would you like to delete?"
+                }
+            
+            # Find the section
+            section = await self.notes.get_section_by_name(user_id, section_name)
+            
+            if not section:
+                return {"success": False, "message": f"Section '{section_name}' not found"}
+            
+            # Attempt to delete (will check for notes)
+            result = await self.notes.delete_section(section["id"], user_id)
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error deleting section: {e}")
+            return {"success": False, "error": str(e)}
+    
     async def handle_create_note(self, user_id: str, data: Dict) -> Dict:
         """Handle create_note intent with section management"""
         try:
@@ -359,10 +510,26 @@ class MobileIntentHandler:
                 end_date=end_date
             )
             
+            if not events:
+                return {
+                    "success": True,
+                    "data": events,
+                    "message": "No events found in this time period."
+                }
+            
+            # Format events into a readable message
+            event_list = []
+            for event in events:
+                event_dt = datetime.fromisoformat(event["event_datetime"])
+                formatted_date = event_dt.strftime("%A, %B %d at %I:%M %p")
+                event_list.append(f"• {event['title']} - {formatted_date}")
+            
+            message = f"Found {len(events)} event(s):\n\n" + "\n".join(event_list)
+            
             return {
                 "success": True,
                 "data": events,
-                "message": f"Found {len(events)} event(s)"
+                "message": message
             }
         except Exception as e:
             logger.error(f"Error viewing calendar: {e}")
