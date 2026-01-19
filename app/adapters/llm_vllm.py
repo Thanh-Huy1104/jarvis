@@ -11,20 +11,21 @@ try:
 except ImportError:
     from langchain_community.chat_models import ChatOpenAI
 from app.domain.ports import LLMPromptPort
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 class VllmAdapter(LLMPromptPort):
     def __init__(self) -> None:
-        # Main model for complex reasoning (port 8000)
-        self.base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
-        self.model_name = os.getenv("VLLM_MODEL_NAME", "Qwen/Qwen3-14B-AWQ")
+        # Main model for complex reasoning
+        self.base_url = settings.vllm_base_url
+        self.model_name = settings.vllm_model_name
         
-        # Speed model for fast responses (port 8001)
-        self.speed_base_url = os.getenv("VLLM_SPEED_BASE_URL", "http://localhost:8001/v1")
-        self.speed_model_name = os.getenv("VLLM_SPEED_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct-AWQ")
+        # Speed model for fast responses
+        self.speed_base_url = settings.vllm_speed_url
+        self.speed_model_name = settings.vllm_speed_model
         
-        # Complex reasoning model (14B)
+        # Complex reasoning model
         self._model = ChatOpenAI(
             base_url=self.base_url,
             api_key="EMPTY",
@@ -33,7 +34,7 @@ class VllmAdapter(LLMPromptPort):
             streaming=True,
         )
         
-        # Fast response model (7B)
+        # Fast response model
         self._speed_model = ChatOpenAI(
             base_url=self.speed_base_url,
             api_key="EMPTY",
@@ -88,6 +89,19 @@ class VllmAdapter(LLMPromptPort):
         except Exception as e:
             logger.error(f"LLM Error: {e}")
             logger.info("Stack trace for LLM Error:", exc_info=True)
+            return AIMessage(content=f"Error generating response: {str(e)}")
+
+    async def ainvoke(self, messages: List[BaseMessage]) -> AIMessage:
+        """
+        Direct invocation interface for compatibility.
+        Uses the speed model for quick responses.
+        """
+        try:
+            response = await self._speed_model.ainvoke(messages)
+            return response
+        except Exception as e:
+            logger.error(f"LLM ainvoke Error: {e}")
+            logger.info("Stack trace for LLM ainvoke Error:", exc_info=True)
             return AIMessage(content=f"Error generating response: {str(e)}")
 
     async def summarize(self, user_message: str, assistant_message: str) -> str:

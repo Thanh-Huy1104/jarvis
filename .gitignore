@@ -35,7 +35,7 @@ gcp-oauth.keys.json
 .mypy_cache/
 .dmypy.json
 dmypy.json
-db/
+
 chroma/
 # pytest
 .pytest_cache/
@@ -45,3 +45,4 @@ kokoro-v1.0.onnx
 voices-v1.0.json
 eve_memory_local/
 mem0_storage/
+node_modules

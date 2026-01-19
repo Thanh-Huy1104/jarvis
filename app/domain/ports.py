@@ -1,14 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, AsyncIterable, Optional
 from langchain_core.messages import BaseMessage, AIMessage
-from app.core.types import ChatMessage
-
-class SessionStorePort(ABC):
-    @abstractmethod
-    def get_recent(self, session_id: str, limit: int) -> List[ChatMessage]: ...
-    
-    @abstractmethod
-    def append(self, session_id: str, msg: ChatMessage) -> None: ...
 
 class STTPort(ABC):
     @abstractmethod

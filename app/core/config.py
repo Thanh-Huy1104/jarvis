@@ -1,26 +1,43 @@
-from pydantic import BaseModel
+from pydantic_settings import BaseSettings
+from typing import Optional
 
+class Settings(BaseSettings):
+    # Core settings
+    database_url: str = "sqlite+aiosqlite:///./jarvis.db"
 
-class Settings(BaseModel):
-    # LLM
-    llama_temperature_router: float = 0.0
-    llama_temperature_chat: float = 0.7
+    # LLM Configuration
+    vllm_base_url: str = "http://localhost:11434/v1"
+    vllm_model_name: str = "llama3.1:8b"
+    vllm_speed_url: str = "http://localhost:11434/v1"
+    vllm_speed_model: str = "llama3.1:8b"
 
-    # STT
-    whisper_model: str = "small.en"  # tiny.en/base.en/small.en
-    # device is chosen in adapter (cpu/cuda)
-
-    # TTS (Kokoro)
-    kokoro_model: str = "kokoro-v1.0.onnx"
-    kokoro_voices: str = "voices-v1.0.json"
-    kokoro_voice_name: str = "af_heart"
-    kokoro_lang: str = "en-us"
+    # Adapters
+    whisper_model: str = "base"
+    kokoro_model: str = ""
+    kokoro_voices: str = ""
+    kokoro_voice_name: str = "en-us_ljspeech"
     kokoro_speed: float = 1.0
+    kokoro_lang: str = "en"
 
-    # App
-    max_recent_messages: int = 10
-    
-    database_url: str = "postgresql+asyncpg://jarvis:jarvis_password@localhost:5432/jarvis_db"
+    # Google Calendar
+    google_calendar_enabled: bool = False
+    google_application_credentials: Optional[str] = None
+    google_oauth_credentials: Optional[str] = None
 
+    # AWS
+    aws_access_key_id: Optional[str] = None
+    aws_secret_access_key: Optional[str] = None
+    aws_default_region: Optional[str] = None
+
+    # Phoenix Observability
+    phoenix_host: Optional[str] = None
+    phoenix_port: Optional[int] = None
+
+    # Other API Keys
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+
+    class Config:
+        env_file = ".env"
 
 settings = Settings()
