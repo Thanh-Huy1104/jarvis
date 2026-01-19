@@ -1,18 +1,20 @@
 import React from 'react';
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Link, Tabs } from 'expo-router';
-import { Pressable } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
+import { Tabs } from 'expo-router';
+import { FontAwesome, Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 
-// You can explore the built-in icon families and icons on the web at https://icons.expo.fyi/
+/**
+ * Custom Tab Bar Icon using Ionicons for a consistent modern look
+ */
 function TabBarIcon(props: {
-  name: React.ComponentProps<typeof FontAwesome>['name'];
+  name: React.ComponentProps<typeof Ionicons>['name'];
   color: string;
 }) {
-  return <FontAwesome size={28} style={{ marginBottom: -3 }} {...props} />;
+  return <Ionicons size={24} style={{ marginBottom: -3 }} {...props} />;
 }
 
 export default function TabLayout() {
@@ -21,39 +23,58 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        // Disable the static render of the header on web
-        // to prevent a hydration error in React Navigation v6.
-        headerShown: useClientOnlyValue(false, true),
+        headerShown: false,
+        
+        // Dark-themed Tab Bar Styling
+        tabBarActiveTintColor: '#007AFF',
+        tabBarInactiveTintColor: '#6E6E73',
+        tabBarStyle: {
+          backgroundColor: '#000000',
+          borderTopColor: '#1C1C1E',
+          borderTopWidth: 0.5,
+          height: Platform.OS === 'ios' ? 88 : 70,
+          paddingBottom: Platform.OS === 'ios' ? 30 : 12,
+          paddingTop: 12,
+          elevation: 0,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.3,
+          shadowRadius: 8,
+        },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '600',
+          letterSpacing: 0.3,
+        },
+        tabBarItemStyle: {
+          paddingVertical: 4,
+        },
+        tabBarBackground: () => 
+          Platform.OS === 'ios' ? (
+            <BlurView 
+              intensity={100} 
+              tint="dark" 
+              style={StyleSheet.absoluteFill} 
+            />
+          ) : undefined,
       }}>
+      
       <Tabs.Screen
         name="HomeScreen"
         options={{
-          title: 'Home',
-          tabBarIcon: ({ color }) => <TabBarIcon name="home" color={color} />,
-          headerRight: () => (
-            <Link href="/modal" asChild>
-              <Pressable>
-                {({ pressed }) => (
-                  <FontAwesome
-                    name="info-circle"
-                    size={25}
-                    color={Colors[colorScheme ?? 'light'].text}
-                    style={{ marginRight: 15, opacity: pressed ? 0.5 : 1 }}
-                  />
-                )}
-              </Pressable>
-            </Link>
-          ),
+          title: 'Chat',
+          tabBarIcon: ({ color }) => <TabBarIcon name="chatbubble-ellipses" color={color} />,
         }}
       />
+      
       <Tabs.Screen
         name="NotesScreen"
         options={{
           title: 'Notes',
-          tabBarIcon: ({ color }) => <TabBarIcon name="sticky-note" color={color} />,
+          tabBarIcon: ({ color }) => <TabBarIcon name="journal" color={color} />,
         }}
       />
+      
       <Tabs.Screen
         name="CalendarScreen"
         options={{

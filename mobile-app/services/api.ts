@@ -62,3 +62,18 @@ export const createSection = async (sectionName: string, description?: string) =
   }
 };
 
+export const createNote = async (sectionId: number, content: string, tags?: string[]) => {
+  try {
+    const response = await apiClient.post('/mobile/notes', {
+      user_id: 'default-user',
+      section_id: sectionId,
+      content,
+      tags
+    });
+    return response.data;
+  } catch (error) {
+    console.error('Error creating note:', error);
+    throw error;
+  }
+};
+

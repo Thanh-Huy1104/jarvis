@@ -31,6 +31,13 @@ class CreateSectionRequest(BaseModel):
     description: Optional[str] = None
 
 
+class CreateNoteRequest(BaseModel):
+    user_id: str
+    section_id: int
+    content: str
+    tags: Optional[list[str]] = None
+
+
 # Chat Endpoint
 @router.post("/chat")
 async def chat(request: Request, data: ChatRequest):
@@ -185,4 +192,24 @@ async def get_notes_by_section(user_id: str, section_id: int, limit: int = 100):
         return {"notes": notes}
     except Exception as e:
         logger.error(f"Get notes by section error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/notes")
+async def create_note_manually(data: CreateNoteRequest):
+    """Create a new note manually"""
+    try:
+        result = await NoteSkills.create_note(
+            user_id=data.user_id,
+            section_id=data.section_id,
+            content=data.content,
+            tags=data.tags
+        )
+        return {
+            "success": True,
+            "message": "Note created successfully",
+            "note": result
+        }
+    except Exception as e:
+        logger.error(f"Create note error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
